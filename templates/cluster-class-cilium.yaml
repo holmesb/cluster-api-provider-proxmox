@@ -166,6 +166,23 @@ spec:
             mode:
               type: string
               enum: ["ipvs","iptables"]
+    - name: provisioningMode
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: string
+          enum: [ "explicit","selector" ]
+    - name: templateSelector
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            matchTags:
+              type: array
+              items:
+                type: string
+              minItems: 1
     - name: cloneSpec
       required: true
       schema:
@@ -187,8 +204,6 @@ spec:
               properties:
                 controlPlane: &machineSpec
                   type: object
-                  required:
-                  - sourceNode
                   properties:
                     disks:
                       type: object
@@ -512,6 +527,10 @@ spec:
                         path: /etc/kubernetes/admin.conf
                         type: FileOrCreate
                       name: kubeconfig
+  - name: ControlPlaneTemplateBindingExplicit
+    description: "Bind control-plane PMT via SourceNode/TemplateID"
+    enabledIf: '{{ if eq .provisioningMode "explicit" }}true{{ end }}'
+    definitions:
       - selector:
           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
           kind: ProxmoxMachineTemplate
@@ -526,6 +545,23 @@ spec:
             path: /spec/template/spec/templateID
             valueFrom:
               variable: cloneSpec.machineSpec.controlPlane.templateID
+  - name: ControlPlaneTemplateBindingSelector
+    description: "Bind control-plane PMT via Template Selector"
+    enabledIf: '{{ if eq .provisioningMode "selector" }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/localStorage
+            value: true
+          - op: add
+            path: /spec/template/spec/templateSelector
+            valueFrom:
+              variable: templateSelector
   - name: kube-proxy-setup
     description: "kube-proxy configuration"
     enabledIf: "{{ if eq .kubeProxy.mode \"ipvs\" }}true{{ end }}"
@@ -573,6 +609,10 @@ spec:
               template: |
                 - name: root
                   sshAuthorizedKeys: {{ .cloneSpec.sshAuthorizedKeys }}
+  - name: WorkerTemplateBindingExplicit
+    description: "Bind control-plane PMT via SourceNode/TemplateID"
+    enabledIf: '{{ if eq .provisioningMode "explicit" }}true{{ end }}'
+    definitions:
       - selector:
           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
           kind: ProxmoxMachineTemplate
@@ -590,6 +630,26 @@ spec:
             path: /spec/template/spec/templateID
             valueFrom:
               variable: cloneSpec.machineSpec.workerNode.templateID
+  - name: WorkerTemplateBindingSelector
+    description: "Bind control-plane PMT via Template Selector"
+    enabledIf: '{{ if eq .provisioningMode "selector" }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: false
+            machineDeploymentClass:
+              names:
+                - proxmox-worker
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/localStorage
+            value: true
+          - op: add
+            path: /spec/template/spec/templateSelector
+            valueFrom:
+              variable: templateSelector
   - name: LoadBalancerSetup
     description: "Configure LoadBalancer Node Initialisation"
     definitions:
@@ -607,6 +667,10 @@ spec:
               template: |
                 - name: root
                   sshAuthorizedKeys: {{ .cloneSpec.sshAuthorizedKeys }}
+  - name: LoadBalancerTemplateBindingExplicit
+    description: "Bind control-plane PMT via SourceNode/TemplateID"
+    enabledIf: '{{ if eq .provisioningMode "explicit" }}true{{ end }}'
+    definitions:
       - selector:
           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
           kind: ProxmoxMachineTemplate
@@ -624,6 +688,26 @@ spec:
             path: /spec/template/spec/templateID
             valueFrom:
               variable: cloneSpec.machineSpec.loadBalancer.templateID
+  - name: LoadBalancerTemplateBindingSelector
+    description: "Bind control-plane PMT via Template Selector"
+    enabledIf: '{{ if eq .provisioningMode "selector" }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: false
+            machineDeploymentClass:
+              names:
+                - proxmox-loadbalancer
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/localStorage
+            value: true
+          - op: add
+            path: /spec/template/spec/templateSelector
+            valueFrom:
+              variable: templateSelector
   - name: ControlPlaneNodeSockets
     description: "Configure Control Plane Sockets"
     enabledIf: "{{ if .cloneSpec.machineSpecs.controlPlane.numSockets }}true{{ end }}"
