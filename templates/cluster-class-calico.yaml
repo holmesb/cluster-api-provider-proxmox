@@ -166,6 +166,29 @@ spec:
             mode:
               type: string
               enum: ["ipvs","iptables"]
+    - name: templateSelector
+      required: false
+      schema:
+        openAPIV3Schema:
+          description: When set, we use tag-based template selection (and drop sourceNode/templateID).
+          type: object
+          properties:
+            matchTags:
+              type: array
+              items:
+                type: string
+              minItems: 1
+          required:
+            - matchTags
+    - name: localStorage
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: boolean
+          default: false
+          description: >
+            If true, CAPMOX will schedule clones from a template on the same node where the VM is created (works with 
+            templateSelector or explicit sourceNode/templateID). Defaults to false.
     - name: cloneSpec
       required: true
       schema:
@@ -187,8 +210,6 @@ spec:
               properties:
                 controlPlane: &machineSpec
                   type: object
-                  required:
-                  - sourceNode
                   properties:
                     disks:
                       type: object
@@ -512,20 +533,162 @@ spec:
                         path: /etc/kubernetes/admin.conf
                         type: FileOrCreate
                       name: kubeconfig
+  - name: ApplyLocalStorageFlag-ControlPlane
+    definitions:
       - selector:
           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
           kind: ProxmoxMachineTemplate
           matchResources:
             controlPlane: true
         jsonPatches:
-          - op: replace
+          - op: add
+            path: /spec/template/spec/localStorage
+            valueFrom:
+              template: '{{ .localStorage | default false }}'
+
+  - name: ApplyLocalStorageFlag-Worker
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names:
+                - proxmox-worker
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/localStorage
+            valueFrom:
+              template: '{{ .localStorage | default false }}'
+
+  - name: ApplyLocalStorageFlag-LoadBalancer
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names:
+                - proxmox-loadbalancer
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/localStorage
+            valueFrom:
+              template: '{{ .localStorage | default false }}'
+
+# (A) Selector mode: if templateSelector is provided, set it and REMOVE sourceNode/templateID
+  - name: TemplateSelectorMode-ControlPlane
+    enabledIf: '{{ if .templateSelector }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/templateSelector
+            valueFrom:
+              variable: templateSelector
+          - op: remove
+            path: /spec/template/spec/sourceNode
+          - op: remove
+            path: /spec/template/spec/templateID
+  - name: TemplateSelectorMode-Worker
+    enabledIf: '{{ if .templateSelector }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names:
+                - proxmox-worker
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/templateSelector
+            valueFrom:
+              variable: templateSelector
+          - op: remove
+            path: /spec/template/spec/sourceNode
+          - op: remove
+            path: /spec/template/spec/templateID
+  - name: TemplateSelectorMode-LoadBalancer
+    enabledIf: '{{ if .templateSelector }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names:
+                - proxmox-loadbalancer
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/templateSelector
+            valueFrom:
+              variable: templateSelector
+          - op: remove
+            path: /spec/template/spec/sourceNode
+          - op: remove
+            path: /spec/template/spec/templateID
+
+  # (B) Explicit mode: when NO templateSelector, set sourceNode/templateID from cloneSpec
+  - name: ExplicitMode-ControlPlane
+    enabledIf: '{{ if not .templateSelector }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
             path: /spec/template/spec/sourceNode
             valueFrom:
               variable: cloneSpec.machineSpec.controlPlane.sourceNode
-          - op: replace
+          - op: add
             path: /spec/template/spec/templateID
             valueFrom:
               variable: cloneSpec.machineSpec.controlPlane.templateID
+  - name: ExplicitMode-Worker
+    enabledIf: '{{ if not .templateSelector }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names:
+                - proxmox-worker
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/sourceNode
+            valueFrom:
+              variable: cloneSpec.machineSpec.workerNode.sourceNode
+          - op: add
+            path: /spec/template/spec/templateID
+            valueFrom:
+              variable: cloneSpec.machineSpec.workerNode.templateID
+  - name: ExplicitMode-LoadBalancer
+    enabledIf: '{{ if not .templateSelector }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names:
+                - proxmox-loadbalancer
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/sourceNode
+            valueFrom:
+              variable: cloneSpec.machineSpec.loadBalancer.sourceNode
+          - op: add
+            path: /spec/template/spec/templateID
+            valueFrom:
+              variable: cloneSpec.machineSpec.loadBalancer.templateID
   - name: kube-proxy-setup
     description: "kube-proxy configuration"
     enabledIf: "{{ if eq .kubeProxy.mode \"ipvs\" }}true{{ end }}"
@@ -573,23 +736,6 @@ spec:
               template: |
                 - name: root
                   sshAuthorizedKeys: {{ .cloneSpec.sshAuthorizedKeys }}
-      - selector:
-          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
-          kind: ProxmoxMachineTemplate
-          matchResources:
-            controlPlane: false
-            machineDeploymentClass:
-              names:
-              - proxmox-worker
-        jsonPatches:
-          - op: replace
-            path: /spec/template/spec/sourceNode
-            valueFrom:
-              variable: cloneSpec.machineSpec.workerNode.sourceNode
-          - op: replace
-            path: /spec/template/spec/templateID
-            valueFrom:
-              variable: cloneSpec.machineSpec.workerNode.templateID
   - name: LoadBalancerSetup
     description: "Configure LoadBalancer Node Initialisation"
     definitions:
@@ -607,23 +753,6 @@ spec:
               template: |
                 - name: root
                   sshAuthorizedKeys: {{ .cloneSpec.sshAuthorizedKeys }}
-      - selector:
-          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
-          kind: ProxmoxMachineTemplate
-          matchResources:
-            controlPlane: false
-            machineDeploymentClass:
-              names:
-              - proxmox-loadbalancer
-        jsonPatches:
-          - op: replace
-            path: /spec/template/spec/sourceNode
-            valueFrom:
-              variable: cloneSpec.machineSpec.loadBalancer.sourceNode
-          - op: replace
-            path: /spec/template/spec/templateID
-            valueFrom:
-              variable: cloneSpec.machineSpec.loadBalancer.templateID
   - name: ControlPlaneNodeSockets
     description: "Configure Control Plane Sockets"
     enabledIf: "{{ if .cloneSpec.machineSpecs.controlPlane.numSockets }}true{{ end }}"
