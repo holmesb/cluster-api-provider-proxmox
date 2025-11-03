@@ -279,7 +279,8 @@ containers:
     args:
     - --leader-elect
     - --feature-gates=ClusterTopology=true
-    - "--metrics-bind-address=localhost:8080"
+    - "--diagnostics-address=:8443"
+    - "--insecure-diagnostics=false"
     - "--v=0"
     env:
     - name: PROXMOX_INSECURE
@@ -295,7 +296,8 @@ containers:
     args:
     - --leader-elect
     - --feature-gates=ClusterTopology=true
-    - "--metrics-bind-address=localhost:8080"
+    - "--diagnostics-address=:8443"
+    - "--insecure-diagnostics=false"
     - "--v=0"
     - "--proxmox-root-cert-file=/var/lib/proxmox/certs/root-ca.pem"
     env:

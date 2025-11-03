@@ -181,7 +181,7 @@ func TestEnsureVirtualMachine_CreateVM_FullOptions_TemplateSelector_SharedStorag
 	}
 	machineScope.ProxmoxMachine.Spec.LocalStorage = ptr.To(false)
 	machineScope.ProxmoxMachine.Spec.Description = ptr.To("test vm")
-	machineScope.ProxmoxMachine.Spec.Format = ptr.To(infrav1alpha1.TargetStorageFormatRaw)
+	machineScope.ProxmoxMachine.Spec.Format = ptr.To(infrav1alpha1.TargetFileStorageFormatRaw)
 	machineScope.ProxmoxMachine.Spec.Full = ptr.To(true)
 	machineScope.ProxmoxMachine.Spec.Pool = ptr.To("pool")
 	machineScope.ProxmoxMachine.Spec.SnapName = ptr.To("snap")
