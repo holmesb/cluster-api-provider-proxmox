@@ -174,18 +174,34 @@ func (c *APIClient) FindVMTemplatesByTags(ctx context.Context, templateTags []st
 		}
 
 		vmTags := strings.Split(vm.Tags, ";")
+		for i := range vmTags {
+			vmTags[i] = strings.ToLower(strings.TrimSpace(vmTags[i]))
+		}
 		slices.Sort(vmTags)
+		vmTags = slices.Compact(vmTags)
 
 		// if localstorage - template should be on all allowed nodes
 		if localStorage && !slices.Contains(allowedNodes, vm.Node) {
 			continue
 		}
 
-		if slices.Equal(vmTags, uniqueTags) {
-			// check if we have multiple templates per node
-			if _, exists := templates[vm.Node]; exists {
-				return nil, fmt.Errorf("%w: multiple VM templates found on node %q with tags %q", ErrMultipleTemplatesFound, vm.Node, strings.Join(templateTags, ";"))
+		isSuperset := func(have, want []string) bool {
+			haveIdx, wantIdx := 0, 0
+			for haveIdx < len(have) && wantIdx < len(want) {
+				switch {
+				case have[haveIdx] == want[wantIdx]:
+					haveIdx++
+					wantIdx++
+				case have[haveIdx] < want[wantIdx]:
+					haveIdx++
+				default:
+					return false
+				}
 			}
+			return wantIdx == len(want)
+		}
+
+		if isSuperset(vmTags, uniqueTags) {
 			templates[vm.Node] = int32(vm.VMID)
 		}
 	}
