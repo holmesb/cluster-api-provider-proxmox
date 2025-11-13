@@ -260,11 +260,9 @@ spec:
                               type: string
                         sizeGb:
                           type: integer
+                              format: int32
                           minimum: 5
-                          format: int32
-                      required:
-                      - disk
-                      - sizeGb
+                          required: [disk, sizeGb]
                     format:
                       type: string
                       enum: [raw, qcow2, vmdk]
@@ -438,7 +436,7 @@ spec:
                 workerNode: *machineSpec
                 loadBalancer: *machineSpec
   patches:
-  - name: worker-additional-volumes
+  - name: worker-additional-volumes  # Deprecated in favor of .spec.disks.volumes (coming in a future API)
     description: "Add additional disks to workers via variable. Deprecated in favor of .spec.disks.volumes (coming in a future API)."
     enabledIf: "{{ if .workerAdditionalVolumes }}true{{ end }}"
     definitions:
@@ -847,6 +845,92 @@ spec:
             path: /spec/template/spec/templateID
             valueFrom:
               variable: cloneSpec.machineSpec.loadBalancer.templateID
+  - name: BootVolume-ControlPlane
+    enabledIf: '{{ if .cloneSpec }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/disks
+            value: {}
+          - op: add
+            path: /spec/template/spec/disks/bootVolume
+            value: {}
+          - op: add
+            path: /spec/template/spec/disks/bootVolume/disk
+            valueFrom:
+              variable: cloneSpec.machineSpec.controlPlane.disks.bootVolume.disk
+          - op: add
+            path: /spec/template/spec/disks/bootVolume/sizeGb
+            valueFrom:
+              variable: cloneSpec.machineSpec.controlPlane.disks.bootVolume.sizeGb
+          - op: add
+            path: /spec/template/spec/format
+            valueFrom:
+              variable: cloneSpec.machineSpec.controlPlane.disks.format
+  - name: BootVolume-Worker
+    enabledIf: '{{ if .cloneSpec }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names:
+                - proxmox-worker
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/disks
+            value: {}
+          - op: add
+            path: /spec/template/spec/disks/bootVolume
+            value: {}
+          - op: add
+            path: /spec/template/spec/disks/bootVolume/disk
+            valueFrom:
+              variable: cloneSpec.machineSpec.controlPlane.disks.bootVolume.disk
+          - op: add
+            path: /spec/template/spec/disks/bootVolume/sizeGb
+            valueFrom:
+              variable: cloneSpec.machineSpec.controlPlane.disks.bootVolume.sizeGb
+          - op: add
+            path: /spec/template/spec/format
+            valueFrom:
+              variable: cloneSpec.machineSpec.controlPlane.disks.format
+  - name: BootVolume-Loadbalancer
+    enabledIf: '{{ if .cloneSpec }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names:
+                - proxmox-loadbalancer
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/disks
+            value: {}
+          - op: add
+            path: /spec/template/spec/disks/bootVolume
+            value: {}
+          - op: add
+            path: /spec/template/spec/disks/bootVolume/disk
+            valueFrom:
+              variable: cloneSpec.machineSpec.controlPlane.disks.bootVolume.disk
+          - op: add
+            path: /spec/template/spec/disks/bootVolume/sizeGb
+            valueFrom:
+              variable: cloneSpec.machineSpec.controlPlane.disks.bootVolume.sizeGb
+          - op: add
+            path: /spec/template/spec/format
+            valueFrom:
+              variable: cloneSpec.machineSpec.controlPlane.disks.format
+
   - name: kube-proxy-setup
     description: "kube-proxy configuration"
     enabledIf: "{{ if eq .kubeProxy.mode \"ipvs\" }}true{{ end }}"
