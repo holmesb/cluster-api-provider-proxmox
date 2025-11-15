@@ -342,6 +342,8 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode(t *testing.T) {
 	}
 	machineScope.ProxmoxMachine.Spec.AllowedNodes = allowedNodes
 	machineScope.ProxmoxMachine.Spec.LocalStorage = ptr.To(localStorage)
+	storage := "local-lvm"
+	machineScope.ProxmoxMachine.Spec.Storage = &storage
 
 	proxmoxClient.EXPECT().
 		FindVMTemplatesByTags(context.Background(), vmTemplateTags, allowedNodes, localStorage).
@@ -354,9 +356,10 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode(t *testing.T) {
 	t.Cleanup(func() { selectNextNode = scheduler.ScheduleVM })
 
 	expectedOptions := proxmox.VMCloneRequest{
-		Node:   "node1",
-		Name:   "test",
-		Target: "node3",
+		Node:    "node1",
+		Name:    "test",
+		Target:  "node3",
+		Storage: "local-lvm",
 	}
 
 	response := proxmox.VMCloneResponse{
@@ -384,6 +387,7 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode_MachineAllowedNodes_SharedStor
 	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
 	machineScope.InfraCluster.ProxmoxCluster.Spec.AllowedNodes = clusterAllowedNodes
 	machineScope.ProxmoxMachine.Spec.AllowedNodes = proxmoxMachineAllowedNodes
+
 	// we need to search for templates, as we cannot do node scheduling without them
 	vmTemplateTags := []string{"foo", "bar"}
 	machineScope.ProxmoxMachine.Spec.LocalStorage = ptr.To(false)
@@ -402,12 +406,46 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode_MachineAllowedNodes_SharedStor
 		Return(templateMap, nil).
 		Once()
 
+	// Force the scheduler to pick node2 as the target node.
 	selectNextNode = func(context.Context, *scope.MachineScope, map[string]int32, []string) (string, int32, error) {
 		return "node2", 123, nil
 	}
-	t.Cleanup(func() { selectNextNode = scheduler.ScheduleVM })
+	defer func() { selectNextNode = scheduler.ScheduleVM }()
 
-	expectedOptions := proxmox.VMCloneRequest{Node: "node1", Name: "test", Target: "node2"}
+	// With no storage specified on the machine or volume, createVM will query
+	// storages on the chosen node and pick appropriate pools.
+	proxmoxClient.EXPECT().
+		ListNodeStorages(context.Background(), "node2").
+		Return([]proxmox.StorageStatus{
+			{
+				Name:    "local-node2-a",
+				Enabled: true,
+				Active:  true,
+				Shared:  false,
+				Content: "images,rootdir",
+				Avail:   20,
+			},
+			{
+				Name:    "local-node2-b",
+				Enabled: true,
+				Active:  true,
+				Shared:  false,
+				Content: "images",
+				Avail:   10,
+			},
+		}, nil).
+		Once()
+
+	// selectNodeStorages will sort by Avail descending and, for the boot volume
+	// (clone storage), use the second candidate when more than one is available.
+	// That means we expect Storage to be "local-node2-b" here.
+	expectedOptions := proxmox.VMCloneRequest{
+		Node:    "node1",
+		Name:    "test",
+		Target:  "node2",
+		Storage: "local-node2-b",
+	}
+
 	response := proxmox.VMCloneResponse{NewID: 122, Task: newTask()}
 	proxmoxClient.EXPECT().CloneVM(context.Background(), 122, expectedOptions).Return(response, nil).Once()
 
@@ -429,6 +467,7 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode_MachineAllowedNodes_LocalStora
 	machineScope.InfraCluster.ProxmoxCluster.Spec.AllowedNodes = clusterAllowedNodes
 	machineScope.ProxmoxMachine.Spec.AllowedNodes = proxmoxMachineAllowedNodes
 	machineScope.ProxmoxMachine.Spec.LocalStorage = ptr.To(true)
+
 	machineScope.ProxmoxMachine.Spec.VirtualMachineCloneSpec = infrav1alpha1.VirtualMachineCloneSpec{
 		TemplateSource: infrav1alpha1.TemplateSource{
 			LocalStorage: ptr.To(true),
@@ -446,9 +485,31 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode_MachineAllowedNodes_LocalStora
 	selectNextNode = func(context.Context, *scope.MachineScope, map[string]int32, []string) (string, int32, error) {
 		return "node2", 123, nil
 	}
-	t.Cleanup(func() { selectNextNode = scheduler.ScheduleVM })
+	defer func() { selectNextNode = scheduler.ScheduleVM }()
 
-	expectedOptions := proxmox.VMCloneRequest{Node: "node2", Name: "test", Target: "node2"}
+	// With no explicit storage configured, createVM will query storages on the
+	// chosen node (node2) and pick an appropriate local pool.
+	proxmoxClient.EXPECT().
+		ListNodeStorages(context.Background(), "node2").
+		Return([]proxmox.StorageStatus{
+			{
+				Name:    "local-node2",
+				Enabled: true,
+				Active:  true,
+				Shared:  false,
+				Content: "images,rootdir",
+				Avail:   10,
+			},
+		}, nil).
+		Once()
+
+	expectedOptions := proxmox.VMCloneRequest{
+		Node:    "node2",
+		Name:    "test",
+		Target:  "node2",
+		Storage: "local-node2",
+	}
+
 	response := proxmox.VMCloneResponse{NewID: 123, Task: newTask()}
 	proxmoxClient.EXPECT().CloneVM(context.Background(), 123, expectedOptions).Return(response, nil).Once()
 
@@ -508,6 +569,12 @@ func TestEnsureVirtualMachine_CreateVM_VMIDRange(t *testing.T) {
 		End:   1002,
 	}
 
+	// Explicit storage keeps this test focused on VMID selection rather than
+	// storage auto-selection; createVM will not call ListNodeStorages when
+	// Storage is set on the machine spec.
+	storage := "local-lvm"
+	machineScope.ProxmoxMachine.Spec.Storage = &storage
+
 	proxmoxClient.EXPECT().
 		FindVMTemplatesByTags(context.Background(), vmTemplateTags, allowedNodes, false).
 		Return(map[string]int32{"node1": int32(123)}, nil).
@@ -518,11 +585,19 @@ func TestEnsureVirtualMachine_CreateVM_VMIDRange(t *testing.T) {
 		Return(uint64(5000), nil).
 		Once()
 
-	expectedOptions := proxmox.VMCloneRequest{Node: "node1", NewID: 1001, Name: "test", Target: "node1"}
-	response := proxmox.VMCloneResponse{Task: newTask(), NewID: int64(1001)}
+	// First ID in range (1000) is reported as unavailable, second (1001) is free.
 	proxmoxClient.Mock.On("CheckID", context.Background(), int64(1000)).Return(false, nil)
 	proxmoxClient.Mock.On("CheckID", context.Background(), int64(1001)).Return(true, nil)
 
+	expectedOptions := proxmox.VMCloneRequest{
+		Node:    "node1",
+		NewID:   1001,
+		Name:    "test",
+		Target:  "node1",
+		Storage: "local-lvm",
+	}
+
+	response := proxmox.VMCloneResponse{Task: newTask(), NewID: int64(1001)}
 	proxmoxClient.EXPECT().CloneVM(context.Background(), 123, expectedOptions).Return(response, nil).Once()
 
 	requeue, err := ensureVirtualMachine(context.Background(), machineScope)
@@ -617,11 +692,24 @@ func TestEnsureVirtualMachine_CreateVM_VMIDRangeCheckExisting(t *testing.T) {
 		Return(uint64(5000), nil).
 		Once()
 
-	expectedOptions := proxmox.VMCloneRequest{Node: "node1", NewID: 1002, Name: "test", Target: "node1"}
-	response := proxmox.VMCloneResponse{Task: newTask(), NewID: int64(1002)}
-	proxmoxClient.EXPECT().CloneVM(context.Background(), 123, expectedOptions).Return(response, nil).Once()
+	// Explicit storage keeps this test focused on VMID-range checking and reuse
+	// logic, rather than storage auto-selection.
+	storage := "local-lvm"
+	machineScope.ProxmoxMachine.Spec.Storage = &storage
+
 	proxmoxClient.Mock.On("CheckID", context.Background(), int64(1001)).Return(false, nil).Once()
 	proxmoxClient.Mock.On("CheckID", context.Background(), int64(1002)).Return(true, nil).Once()
+
+	expectedOptions := proxmox.VMCloneRequest{
+		Node:    "node1",
+		NewID:   1002,
+		Name:    "test",
+		Target:  "node1",
+		Storage: "local-lvm",
+	}
+
+	response := proxmox.VMCloneResponse{Task: newTask(), NewID: int64(1002)}
+	proxmoxClient.EXPECT().CloneVM(context.Background(), 123, expectedOptions).Return(response, nil).Once()
 
 	requeue, err := ensureVirtualMachine(context.Background(), machineScope)
 	require.NoError(t, err)
@@ -998,25 +1086,79 @@ func TestReconcileVirtualMachineConfig_AdditionalVolumes_PerVolumeStorageOverrid
 	require.True(t, requeue)
 }
 
-func TestReconcileVirtualMachineConfig_AdditionalVolumes_ErrorWhenNoStorageAnywhere(t *testing.T) {
+func TestReconcileVirtualMachineConfig_AdditionalVolumes_AutoSelectsStorageWhenNoStorageAnywhere(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	machineScope, _, _ := setupReconcilerTest(t)
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
 
 	vm := newStoppedVM()
 	machineScope.SetVirtualMachine(vm)
 
-	// No machine storage, no per-volume storage -> error
+	// The node the VM is running on – required so reconcileAdditionalVolumes
+	// knows which node to query for local storage.
+	nodeName := "node1"
+	machineScope.ProxmoxMachine.Status.ProxmoxNode = ptr.To(nodeName)
+
+	// No machine-level storage, no per-volume storage -> should auto-select
+	// a suitable local storage pool on node1 instead of erroring.
 	machineScope.ProxmoxMachine.Spec.Disks = &infrav1alpha1.Storage{
 		AdditionalVolumes: []infrav1alpha1.DiskSpec{
-			{Disk: "scsi1", SizeGB: 10}, // no Storage, no Format
+			{
+				Disk:   "scsi1",
+				SizeGB: 10,
+				// Storage: nil
+				// Format:  nil
+			},
 		},
 	}
 
+	// Storage status returned by Proxmox for node1.
+	// Both are local, enabled, active, and support 'images'.
+	storages := []proxmox.StorageStatus{
+		{
+			Name:    "local-small",
+			Avail:   10 * 1024 * 1024 * 1024, // smaller
+			Content: "images",
+			Enabled: true,
+			Active:  true,
+			Shared:  false,
+		},
+		{
+			Name:    "local-big",
+			Avail:   20 * 1024 * 1024 * 1024, // larger -> should be chosen for additionalVolumes
+			Content: "images,rootdir",
+			Enabled: true,
+			Active:  true,
+			Shared:  false,
+		},
+	}
+
+	// Expect the VM service to ask Proxmox for local storage status on node1.
+	proxmoxClient.EXPECT().
+		ListNodeStorages(ctx, nodeName).
+		Return(storages, nil).
+		Once()
+
+	// With no format specified, additional volumes use the "block" syntax:
+	// "<storage>:<sizeGB>".
+	//
+	// selectNodeStorages picks the storage with the highest avail for
+	// additional volumes, which here is "local-big".
+	expected := []interface{}{
+		proxmox.VirtualMachineOption{
+			Name:  "scsi1",
+			Value: "local-big:10",
+		},
+	}
+
+	proxmoxClient.EXPECT().
+		ConfigureVM(context.Background(), vm, expected...).
+		Return(newTask(), nil).
+		Once()
+
 	requeue, err := reconcileVirtualMachineConfig(ctx, machineScope)
-	require.Error(t, err)
-	require.False(t, requeue)
-	require.Contains(t, err.Error(), "requires a storage to be set")
+	require.NoError(t, err)
+	require.True(t, requeue)
 }
 
 func TestReconcileVirtualMachineConfig_AdditionalVolumes_IdempotentWhenSlotOccupied(t *testing.T) {

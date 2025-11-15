@@ -43,6 +43,13 @@ type Client interface {
 
 	GetReservableMemoryBytes(ctx context.Context, nodeName string, nodeMemoryAdjustment uint64) (uint64, error)
 
+	// ListNodeStorages returns storage status information for all storages on the
+	// specified node. The implementation is expected to query the Proxmox storage
+	// status endpoints (for example /nodes/{node}/storage or
+	// /nodes/{node}/storage/{storage}/status) and map the result into
+	// StorageStatus values.
+	ListNodeStorages(ctx context.Context, nodeName string) ([]StorageStatus, error)
+
 	ResizeDisk(ctx context.Context, vm *proxmox.VirtualMachine, disk, size string) (*proxmox.Task, error)
 
 	ResumeVM(ctx context.Context, vm *proxmox.VirtualMachine) (*proxmox.Task, error)

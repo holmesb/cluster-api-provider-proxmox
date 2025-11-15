@@ -508,6 +508,65 @@ func (_c *MockClient_GetReservableMemoryBytes_Call) RunAndReturn(run func(contex
 	return _c
 }
 
+// ListNodeStorages provides a mock function with given fields: ctx, nodeName.
+func (_m *MockClient) ListNodeStorages(ctx context.Context, nodeName string) ([]proxmox.StorageStatus, error) {
+	ret := _m.Called(ctx, nodeName)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListNodeStorages")
+	}
+
+	var r0 []proxmox.StorageStatus
+	var r1 error
+
+	if rf, ok := ret.Get(0).(func(context.Context, string) ([]proxmox.StorageStatus, error)); ok {
+		return rf(ctx, nodeName)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string) []proxmox.StorageStatus); ok {
+		r0 = rf(ctx, nodeName)
+	} else if ret.Get(0) != nil {
+		r0 = ret.Get(0).([]proxmox.StorageStatus)
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string) error); ok {
+		r1 = rf(ctx, nodeName)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockClient_ListNodeStorages_Call is a *mock.Call that shadows Run/Return
+// methods with type explicit version for method 'ListNodeStorages'
+type MockClient_ListNodeStorages_Call struct {
+	*mock.Call
+}
+
+// ListNodeStorages is a helper method to define mock.On call
+// - ctx context.Context
+// - nodeName string
+func (_e *MockClient_Expecter) ListNodeStorages(ctx interface{}, nodeName interface{}) *MockClient_ListNodeStorages_Call {
+	return &MockClient_ListNodeStorages_Call{Call: _e.mock.On("ListNodeStorages", ctx, nodeName)}
+}
+
+func (_c *MockClient_ListNodeStorages_Call) Run(run func(ctx context.Context, nodeName string)) *MockClient_ListNodeStorages_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string))
+	})
+	return _c
+}
+
+func (_c *MockClient_ListNodeStorages_Call) Return(storages []proxmox.StorageStatus, err error) *MockClient_ListNodeStorages_Call {
+	_c.Call.Return(storages, err)
+	return _c
+}
+
+func (_c *MockClient_ListNodeStorages_Call) RunAndReturn(run func(context.Context, string) ([]proxmox.StorageStatus, error)) *MockClient_ListNodeStorages_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // GetTask provides a mock function with given fields: ctx, upID
 func (_m *MockClient) GetTask(ctx context.Context, upID string) (*go_proxmox.Task, error) {
 	ret := _m.Called(ctx, upID)

@@ -422,7 +422,7 @@ func createSecret() *corev1.Secret {
 			"secret": []byte("secret"),
 		},
 	}
-	Expect(k8sClient.Create(testEnv.GetContext(), secret)).To(Succeed())
+	Expect(k8sClient.Create(context.Background(), secret)).To(Succeed())
 	return secret
 }
 

@@ -767,3 +767,52 @@ func TestProxmoxAPIClient_CloudInitStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestProxmoxAPIClient_ListNodeStorages(t *testing.T) {
+	client := newTestClient(t)
+
+	// Node lookup (c.Client.Node(ctx, "test")) hits /nodes/test/status
+	httpmock.RegisterResponder(
+		http.MethodGet,
+		`=~/nodes/test/status`,
+		newJSONResponder(200, proxmox.Node{}),
+	)
+
+	// Node.Storages(ctx) hits /nodes/test/storage
+	httpmock.RegisterResponder(
+		http.MethodGet,
+		`=~/nodes/test/storage`,
+		newJSONResponder(200, []interface{}{
+			map[string]interface{}{
+				"node":          "test",
+				"storage":       "local-lvm",
+				"enabled":       1,
+				"used_fraction": 0.5,
+				"active":        1,
+				"content":       "images,rootdir",
+				"shared":        0,
+				"avail":         1_000_000_000,
+				"type":          "lvmthin",
+				"used":          500_000_000,
+				"total":         1_500_000_000,
+			},
+		}),
+	)
+
+	storages, err := client.ListNodeStorages(context.Background(), "test")
+	require.NoError(t, err)
+	require.Len(t, storages, 1)
+
+	s := storages[0]
+	require.Equal(t, "test", s.Node)
+	require.Equal(t, "local-lvm", s.Name)
+	require.True(t, s.Enabled)
+	require.True(t, s.Active)
+	require.False(t, s.Shared)
+	require.Equal(t, "images,rootdir", s.Content)
+	require.Equal(t, "lvmthin", s.Type)
+	require.Equal(t, uint64(1_000_000_000), s.Avail)
+	require.Equal(t, uint64(500_000_000), s.Used)
+	require.Equal(t, uint64(1_500_000_000), s.Total)
+	require.InDelta(t, 0.5, s.UsedFraction, 0.0001)
+}

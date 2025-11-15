@@ -40,3 +40,19 @@ type VMCloneResponse struct {
 
 // VirtualMachineOption is an alias for VirtualMachineOption to prevent import conflicts.
 type VirtualMachineOption = proxmox.VirtualMachineOption
+
+// StorageStatus represents the current status of a Proxmox storage on a node.
+// It is a simplified view used by the scheduler and higher-level logic.
+type StorageStatus struct {
+	Node         string // node name
+	Name         string // storage ID / name
+	Enabled      bool
+	UsedFraction float64
+	Active       bool
+	Content      string
+	Shared       bool
+	Avail        uint64
+	Type         string
+	Used         uint64
+	Total        uint64
+}

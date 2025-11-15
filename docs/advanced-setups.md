@@ -196,6 +196,49 @@ Please note: Passed tags will match at least a subset of the tags on the templat
 * Local storage is assumed for templates.
 * Each node listed in the `allowedNodes` is expected to have a copy of the template stored locally.
 * If any of the nodes in `allowedNodes` is missing the template, the operation fails.
+* The VM will still use the node-local storage pool chosen by the scheduler (see “Storage selection” below) unless a specific pool is configured on the machine or volume.
+
+### Storage selection
+
+CAPMOX can either use explicit storage pools you configure, or automatically select a suitable pool on the chosen Proxmox node.
+
+#### Explicit storage (unchanged)
+
+If you set `.spec.storage` on a `ProxmoxMachine`, or `storage` on an additional volume, that value is used as-is for cloning and volume creation. In that case, no automatic storage selection is performed.
+
+#### Automatic storage selection (boot volume)
+
+If no storage is specified at machine level (`.spec.storage` empty) and the clone is selected via tags (`templateSelector`), the provider will:
+
+1. First, select a node for the VM using the existing scheduler (memory and replica-aware behaviour described earlier in this document).
+2. Then, on that node, query all storage pools and filter to those which are:
+    * enabled and active,
+    * not shared (`shared=false`),
+    * and whose `content` includes `images`.
+
+From the remaining local pools:
+
+* If there is more than one candidate, the **boot volume** (clone storage) is placed on the pool with the **second-highest** free space (`avail`).
+* If there is only one candidate, the boot volume uses that pool.
+
+This keeps the “largest” pool primarily available for data / additional volumes where possible.
+
+#### Automatic storage selection (additional volumes)
+
+For additional volumes (defined under `.spec.disks.additionalVolumes`):
+
+* If `storage` is set on the volume, that value is used.
+* Otherwise, if `.spec.storage` is set on the machine, that value is used.
+* Otherwise (no storage anywhere), the same node-local storage candidates are retrieved as above, and the volume is placed on the pool with the **highest** free space (`avail`).
+
+This means:
+
+* Boot volume → second-largest local pool (when there are at least two).
+* Additional volumes → largest local pool.
+* All automatically selected pools are **local, non-shared** and support `images` content.
+
+If you want to avoid this behaviour for a particular machine, set `.spec.storage` explicitly, or specify `storage` on your additional volumes.
+
 
 ### Template lookup and cluster classes
 With the ClusterClasses provided in this repo, in your cluster you can choose one of two ways to tell CAPMOX which 

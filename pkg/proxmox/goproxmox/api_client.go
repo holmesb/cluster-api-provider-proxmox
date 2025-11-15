@@ -330,6 +330,39 @@ func (c *APIClient) GetReservableMemoryBytes(ctx context.Context, nodeName strin
 	return reservableMemory, nil
 }
 
+// ListNodeStorages lists all storages available on the given node and returns a
+// simplified view used by the scheduler.
+func (c *APIClient) ListNodeStorages(ctx context.Context, nodeName string) ([]capmox.StorageStatus, error) {
+	node, err := c.Client.Node(ctx, nodeName)
+	if err != nil {
+		return nil, fmt.Errorf("cannot find node with name %s: %w", nodeName, err)
+	}
+
+	storages, err := node.Storages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("cannot list storages for node %s: %w", nodeName, err)
+	}
+
+	result := make([]capmox.StorageStatus, 0, len(storages))
+	for _, s := range storages {
+		result = append(result, capmox.StorageStatus{
+			Node:         s.Node,
+			Name:         s.Name,
+			Enabled:      s.Enabled == 1,
+			UsedFraction: s.UsedFraction,
+			Active:       s.Active == 1,
+			Content:      s.Content,
+			Shared:       s.Shared == 1,
+			Avail:        s.Avail,
+			Type:         s.Type,
+			Used:         s.Used,
+			Total:        s.Total,
+		})
+	}
+
+	return result, nil
+}
+
 // ResizeDisk resizes a VM disk to the specified size.
 func (c *APIClient) ResizeDisk(ctx context.Context, vm *proxmox.VirtualMachine, disk, size string) (*proxmox.Task, error) {
 	return vm.ResizeDisk(ctx, disk, size)
