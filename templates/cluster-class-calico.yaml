@@ -466,6 +466,32 @@ spec:
                 workerNode: *machineSpec
                 loadBalancer: *machineSpec
   patches:
+  - name: disks-init
+    description: "Initialise .spec.disks as an empty object for PMTs"
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: false
+            machineDeploymentClass:
+              names: ["proxmox-worker", "proxmox-loadbalancer"]
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/disks
+            value: { }
+  - name: disks-init-controlplane
+    description: "Initialise .spec.disks as an empty object for PMTs"
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/disks
+            value: { }
   - name: worker-additional-volumes  # Deprecated in favor of .spec.disks.volumes (coming in a future API)
     description: "Add additional disks to workers via variable. Deprecated in favor of .spec.disks.volumes (coming in a future API)."
     enabledIf: "{{ if .workerAdditionalVolumes }}true{{ end }}"
@@ -479,10 +505,9 @@ spec:
               names: ["proxmox-worker"]
         jsonPatches:
           - op: add
-            path: /spec/template/spec/disks
+            path: /spec/template/spec/disks/additionalVolumes
             valueFrom:
               template: |
-                additionalVolumes:
                 {{- range $i, $v := .workerAdditionalVolumes }}
                 - { disk: {{ $v.disk }}, sizeGb: {{ $v.sizeGb }}
                   {{- if $v.storage }}, storage: {{ $v.storage }}{{- end }}
@@ -518,10 +543,9 @@ spec:
             controlPlane: true
         jsonPatches:
           - op: add
-            path: /spec/template/spec/disks
+            path: /spec/template/spec/disks/additionalVolumes
             valueFrom:
               template: |
-                additionalVolumes:
                 {{- range $i, $v := .controlPlaneAdditionalVolumes }}
                 - { disk: {{ $v.disk }}, sizeGb: {{ $v.sizeGb }}
                   {{- if $v.storage }}, storage: {{ $v.storage }}{{- end }}
@@ -557,10 +581,9 @@ spec:
               names: [ "proxmox-loadbalancer" ]
         jsonPatches:
           - op: add
-            path: /spec/template/spec/disks
+            path: /spec/template/spec/disks/additionalVolumes
             valueFrom:
               template: |
-                additionalVolumes:
                 {{- range $i, $v := .loadBalancerAdditionalVolumes }}
                 - { disk: {{ $v.disk }}, sizeGb: {{ $v.sizeGb }}
                   {{- if $v.storage }}, storage: {{ $v.storage }}{{- end }}
@@ -885,9 +908,6 @@ spec:
             controlPlane: true
         jsonPatches:
           - op: add
-            path: /spec/template/spec/disks
-            value: {}
-          - op: add
             path: /spec/template/spec/disks/bootVolume
             value: {}
           - op: add
@@ -914,9 +934,6 @@ spec:
                 - proxmox-worker
         jsonPatches:
           - op: add
-            path: /spec/template/spec/disks
-            value: {}
-          - op: add
             path: /spec/template/spec/disks/bootVolume
             value: {}
           - op: add
@@ -942,9 +959,6 @@ spec:
               names:
                 - proxmox-loadbalancer
         jsonPatches:
-          - op: add
-            path: /spec/template/spec/disks
-            value: {}
           - op: add
             path: /spec/template/spec/disks/bootVolume
             value: {}
