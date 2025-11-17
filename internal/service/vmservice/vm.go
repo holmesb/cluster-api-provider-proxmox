@@ -19,6 +19,9 @@ package vmservice
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -391,6 +394,67 @@ func getMachineAddresses(scope *scope.MachineScope) ([]clusterv1.MachineAddress,
 	return addresses, nil
 }
 
+func disksSpecHash(disks any) string {
+	if disks == nil {
+		return ""
+	}
+	b, err := json.Marshal(disks)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// ensureStorageSelection returns the boot and additional storage pools for the
+// given machine and node. If a prior selection exists in status and still
+// matches the current node and disks spec, it is reused. Otherwise a new
+// selection is computed via selectNodeStorages and persisted in status.
+func ensureStorageSelection(
+	ctx context.Context,
+	machineScope *scope.MachineScope,
+	nodeName string,
+) (bootStorage, additionalStorage string, err error) {
+	if nodeName == "" {
+		return "", "", errors.New("node name is required to ensure storage selection")
+	}
+
+	pm := machineScope.ProxmoxMachine
+	disksHash := disksSpecHash(pm.Spec.Disks)
+
+	if pm.Status.StorageSelection != nil {
+		selection := pm.Status.StorageSelection
+		if selection.Node == nodeName && selection.DisksHash == disksHash && selection.BootStorage != "" && selection.AdditionalStorage != "" {
+			machineScope.Info("using persisted storage selection",
+				"node", nodeName,
+				"bootStorage", selection.BootStorage,
+				"additionalStorage", selection.AdditionalStorage,
+			)
+			return selection.BootStorage, selection.AdditionalStorage, nil
+		}
+	}
+
+	bootStorage, additionalStorage, err = selectNodeStorages(ctx, machineScope, nodeName)
+	if err != nil {
+		return "", "", err
+	}
+
+	pm.Status.StorageSelection = &infrav1alpha1.StorageSelectionStatus{
+		Node:              nodeName,
+		BootStorage:       bootStorage,
+		AdditionalStorage: additionalStorage,
+		DisksHash:         disksHash,
+	}
+
+	machineScope.Info("computed and stored storage selection",
+		"node", nodeName,
+		"bootStorage", bootStorage,
+		"additionalStorage", additionalStorage,
+	)
+
+	return bootStorage, additionalStorage, nil
+}
+
 func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneResponse, error) {
 	vmid, err := getVMID(ctx, scope)
 	if err != nil {
@@ -507,7 +571,7 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 	}
 
 	if options.Storage == "" {
-		bootStorage, _, err := selectNodeStorages(ctx, scope, node)
+		bootStorage, _, err := ensureStorageSelection(ctx, scope, node)
 		if err != nil {
 			scope.SetFailureMessage(err)
 			scope.SetFailureReason(capierrors.InsufficientResourcesMachineError)
@@ -672,7 +736,7 @@ func reconcileAdditionalVolumes(ctx context.Context, machineScope *scope.Machine
 				}
 
 				var err error
-				_, defaultAdditionalStorage, err = selectNodeStorages(ctx, machineScope, nodeName)
+				_, defaultAdditionalStorage, err = ensureStorageSelection(ctx, machineScope, nodeName)
 				if err != nil {
 					return err
 				}
@@ -728,6 +792,87 @@ func reconcileAdditionalVolumes(ctx context.Context, machineScope *scope.Machine
 
 	return nil
 }
+func reservedAdditionalCapacityByPool(
+	ctx context.Context,
+	machineScope *scope.MachineScope,
+	nodeName string,
+) (map[string]uint64, error) {
+	reserved := make(map[string]uint64)
+	// reservedCount tracks how many additional volumes we have per pool.
+	reservedCount := make(map[string]int)
+
+	if nodeName == "" {
+		return reserved, nil
+	}
+
+	pmList, err := machineScope.InfraCluster.ListProxmoxMachinesForCluster(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot list ProxmoxMachines for reserved capacity")
+	}
+
+	current := machineScope.ProxmoxMachine
+	const GiB = uint64(1024 * 1024 * 1024)
+
+	for _, pm := range pmList {
+		// Skip the current machine; we only care about other machines on this node.
+		if pm.Name == current.Name {
+			continue
+		}
+
+		if pm.Status.ProxmoxNode == nil || *pm.Status.ProxmoxNode != nodeName {
+			continue
+		}
+
+		// Only consider machines that are not Ready yet; once a machine is Ready,
+		// its usage should be reflected in the Proxmox storage metrics.
+		if pm.Status.Ready {
+			continue
+		}
+
+		if pm.Status.StorageSelection == nil || pm.Status.StorageSelection.AdditionalStorage == "" {
+			continue
+		}
+
+		pool := pm.Status.StorageSelection.AdditionalStorage
+		disks := pm.Spec.Disks
+		if disks == nil {
+			continue
+		}
+
+		for _, vol := range disks.AdditionalVolumes {
+			if vol.SizeGB <= 0 {
+				continue
+			}
+
+			// Volumes with explicit storage or a machine-level storage override are
+			// not part of the auto-selected additionalStorage capacity.
+			if vol.Storage != nil && *vol.Storage != "" {
+				continue
+			}
+			if pm.Spec.Storage != nil && *pm.Spec.Storage != "" {
+				continue
+			}
+
+			reserved[pool] += uint64(vol.SizeGB) * GiB
+			reservedCount[pool]++
+		}
+	}
+
+	// Log the reserved capacity per pool so that scheduling decisions can be
+	// correlated with the reservations taken from other not-yet-ready machines
+	// on this node. We also log the number of volumes contributing to each
+	// reservation to make distribution across pools easier to eyeball.
+	logger := machineScope.Logger.WithValues("node", nodeName)
+	if len(reserved) > 0 {
+		logger.Info("reserved additional capacity by pool",
+			"reservedBytes", reserved,
+			"reservedVolumes", reservedCount,
+		)
+	}
+
+	return reserved, nil
+}
+
 func selectNodeStorages(
 	ctx context.Context,
 	machineScope *scope.MachineScope,
@@ -763,18 +908,127 @@ func selectNodeStorages(
 		return "", "", fmt.Errorf("no eligible local image storages found on node %s", nodeName)
 	}
 
+	reserved, err := reservedAdditionalCapacityByPool(ctx, machineScope, nodeName)
+	if err != nil {
+		return "", "", err
+	}
+
+	effectiveFree := func(s proxmox.StorageStatus) uint64 {
+		var base uint64
+		if s.VirtualAvail > 0 {
+			base = s.VirtualAvail
+		} else {
+			base = s.Avail
+		}
+
+		if reservedBytes, ok := reserved[s.Name]; ok {
+			if reservedBytes >= base {
+				return 0
+			}
+			return base - reservedBytes
+		}
+
+		return base
+	}
+
+	// log what we’re about to sort on
+	logger := machineScope.Logger.WithValues("node", nodeName)
+	for _, c := range candidates {
+		reservedBytes := reserved[c.Name]
+		logger.Info("storage candidate",
+			"name", c.Name,
+			"type", c.Type,
+			"enabled", c.Enabled,
+			"active", c.Active,
+			"shared", c.Shared,
+			"content", c.Content,
+			"total", c.Total,
+			"avail", c.Avail,
+			"virtualAllocated", c.VirtualAllocated,
+			"virtualAvail", c.VirtualAvail,
+			"reservedBytes", reservedBytes,
+			"effectiveFree", effectiveFree(c),
+		)
+	}
+
+	// Derive required sizes from the ProxmoxMachine spec.
+	const GiB = uint64(1024 * 1024 * 1024)
+
+	var bootSizeBytes uint64
+	var largestAdditionalSizeBytes uint64
+
+	if disks := machineScope.ProxmoxMachine.Spec.Disks; disks != nil {
+		if disks.BootVolume != nil && disks.BootVolume.SizeGB > 0 {
+			bootSizeBytes = uint64(disks.BootVolume.SizeGB) * GiB
+		}
+
+		for _, vol := range disks.AdditionalVolumes {
+			if vol.SizeGB <= 0 {
+				continue
+			}
+			sz := uint64(vol.SizeGB) * GiB
+			if sz > largestAdditionalSizeBytes {
+				largestAdditionalSizeBytes = sz
+			}
+		}
+	}
+
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Avail > candidates[j].Avail
+		freeBytesI := effectiveFree(candidates[i])
+		freeBytesJ := effectiveFree(candidates[j])
+		if freeBytesI == freeBytesJ {
+			return candidates[i].Name < candidates[j].Name
+		}
+		return freeBytesI > freeBytesJ
 	})
 
-	additionalStorage = candidates[0].Name
-	bootStorage = additionalStorage
+	pickWithCapacity := func(minSizeBytes uint64, disallowName string) (string, bool) {
+		for _, c := range candidates {
+			if disallowName != "" && c.Name == disallowName {
+				continue
+			}
 
-	if len(candidates) > 1 {
-		// Prefer a different pool for the boot volume when possible, so that the
-		// largest pool is reserved for additional data volumes.
-		bootStorage = candidates[1].Name
+			free := effectiveFree(c)
+			if minSizeBytes == 0 || free >= minSizeBytes {
+				return c.Name, true
+			}
+		}
+		return "", false
 	}
+
+	// Additional volumes are typically the largest, so we prioritise finding
+	// a pool that can actually fit the biggest configured additional volume.
+	if largestAdditionalSizeBytes > 0 {
+		name, ok := pickWithCapacity(largestAdditionalSizeBytes, "")
+		if !ok {
+			return "", "", fmt.Errorf(
+				"no eligible local image storages on node %s have enough capacity for additional volumes (required=%d bytes)",
+				nodeName,
+				largestAdditionalSizeBytes,
+			)
+		}
+		additionalStorage = name
+	} else {
+		// No additional volumes: just pick the pool with the most free space.
+		additionalStorage = candidates[0].Name
+	}
+
+	// For the boot volume we prefer a different pool when possible, but we
+	// don't hard-fail if only the additional pool can satisfy the requirement.
+	if bootSizeBytes > 0 {
+		if name, ok := pickWithCapacity(bootSizeBytes, additionalStorage); ok {
+			bootStorage = name
+		} else {
+			bootStorage = additionalStorage
+		}
+	} else {
+		bootStorage = additionalStorage
+	}
+
+	logger.Info("selected storages",
+		"bootStorage", bootStorage,
+		"additionalStorage", additionalStorage,
+	)
 
 	return bootStorage, additionalStorage, nil
 }

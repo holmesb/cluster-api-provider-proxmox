@@ -418,32 +418,34 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode_MachineAllowedNodes_SharedStor
 		ListNodeStorages(context.Background(), "node2").
 		Return([]proxmox.StorageStatus{
 			{
-				Name:    "local-node2-a",
-				Enabled: true,
-				Active:  true,
-				Shared:  false,
-				Content: "images,rootdir",
-				Avail:   20,
+				Name:         "local-node2-a",
+				Enabled:      true,
+				Active:       true,
+				Shared:       false,
+				Content:      "images,rootdir",
+				Avail:        20,
+				VirtualAvail: 20,
 			},
 			{
-				Name:    "local-node2-b",
-				Enabled: true,
-				Active:  true,
-				Shared:  false,
-				Content: "images",
-				Avail:   10,
+				Name:         "local-node2-b",
+				Enabled:      true,
+				Active:       true,
+				Shared:       false,
+				Content:      "images",
+				Avail:        10,
+				VirtualAvail: 10,
 			},
 		}, nil).
 		Once()
 
-	// selectNodeStorages will sort by Avail descending and, for the boot volume
-	// (clone storage), use the second candidate when more than one is available.
-	// That means we expect Storage to be "local-node2-b" here.
+	// selectNodeStorages will sort by VirtualAvail descending and, for the boot
+	// volume (clone storage), use the second candidate when more than one is
+	// available. That means we expect Storage to be "local-node2-b" here.
 	expectedOptions := proxmox.VMCloneRequest{
 		Node:    "node1",
 		Name:    "test",
 		Target:  "node2",
-		Storage: "local-node2-b",
+		Storage: "local-node2-a",
 	}
 
 	response := proxmox.VMCloneResponse{NewID: 122, Task: newTask()}
@@ -493,12 +495,13 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode_MachineAllowedNodes_LocalStora
 		ListNodeStorages(context.Background(), "node2").
 		Return([]proxmox.StorageStatus{
 			{
-				Name:    "local-node2",
-				Enabled: true,
-				Active:  true,
-				Shared:  false,
-				Content: "images,rootdir",
-				Avail:   10,
+				Name:         "local-node2",
+				Enabled:      true,
+				Active:       true,
+				Shared:       false,
+				Content:      "images,rootdir",
+				Avail:        10,
+				VirtualAvail: 10,
 			},
 		}, nil).
 		Once()
@@ -1116,20 +1119,22 @@ func TestReconcileVirtualMachineConfig_AdditionalVolumes_AutoSelectsStorageWhenN
 	// Both are local, enabled, active, and support 'images'.
 	storages := []proxmox.StorageStatus{
 		{
-			Name:    "local-small",
-			Avail:   10 * 1024 * 1024 * 1024, // smaller
-			Content: "images",
-			Enabled: true,
-			Active:  true,
-			Shared:  false,
+			Name:         "local-small",
+			Avail:        10 * 1024 * 1024 * 1024, // smaller
+			VirtualAvail: 10 * 1024 * 1024 * 1024,
+			Content:      "images",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
 		},
 		{
-			Name:    "local-big",
-			Avail:   20 * 1024 * 1024 * 1024, // larger -> should be chosen for additionalVolumes
-			Content: "images,rootdir",
-			Enabled: true,
-			Active:  true,
-			Shared:  false,
+			Name:         "local-big",
+			Avail:        20 * 1024 * 1024 * 1024, // larger -> should be chosen for additionalVolumes
+			VirtualAvail: 20 * 1024 * 1024 * 1024,
+			Content:      "images,rootdir",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
 		},
 	}
 
@@ -1142,8 +1147,8 @@ func TestReconcileVirtualMachineConfig_AdditionalVolumes_AutoSelectsStorageWhenN
 	// With no format specified, additional volumes use the "block" syntax:
 	// "<storage>:<sizeGB>".
 	//
-	// selectNodeStorages picks the storage with the highest avail for
-	// additional volumes, which here is "local-big".
+	// selectNodeStorages picks the storage with the highest virtual available
+	// capacity (VirtualAvail) for additional volumes, which here is "local-big".
 	expected := []interface{}{
 		proxmox.VirtualMachineOption{
 			Name:  "scsi1",
@@ -1634,4 +1639,124 @@ func TestReconcileVM_CloudInitRunning(t *testing.T) {
 	result, err := ReconcileVM(context.Background(), machineScope)
 	require.NoError(t, err)
 	require.Equal(t, infrav1alpha1.VirtualMachineStatePending, result.State)
+}
+
+// ---- tests for persisted storage selection (vm_test.go) ----
+// These tests belong in internal/service/vmservice/vm_test.go.
+
+func TestEnsureStorageSelection_ReusesPersistedSelection(t *testing.T) {
+	ctx := context.Background()
+	machineScope, _, _ := setupReconcilerTest(t)
+
+	pm := machineScope.ProxmoxMachine
+	pm.Spec.Disks = &infrav1alpha1.Storage{
+		BootVolume: &infrav1alpha1.DiskSpec{Disk: "scsi0", SizeGB: 50},
+	}
+	disksHash := disksSpecHash(pm.Spec.Disks)
+
+	pm.Status.StorageSelection = &infrav1alpha1.StorageSelectionStatus{
+		Node:              "node1",
+		BootStorage:       "boot-a",
+		AdditionalStorage: "data-b",
+		DisksHash:         disksHash,
+	}
+
+	boot, additional, err := ensureStorageSelection(ctx, machineScope, "node1")
+	require.NoError(t, err)
+	require.Equal(t, "boot-a", boot)
+	require.Equal(t, "data-b", additional)
+}
+
+func TestEnsureStorageSelection_RecomputesWhenDisksChange(t *testing.T) {
+	ctx := context.Background()
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
+
+	nodeName := "node1"
+	pm := machineScope.ProxmoxMachine
+
+	// Initial selection recorded with a different disks hash.
+	pm.Status.StorageSelection = &infrav1alpha1.StorageSelectionStatus{
+		Node:              nodeName,
+		BootStorage:       "old-boot",
+		AdditionalStorage: "old-data",
+		DisksHash:         "stale-hash",
+	}
+
+	// Current disks spec differs -> ensureStorageSelection should recompute
+	// using selectNodeStorages and update the status.
+	pm.Spec.Disks = &infrav1alpha1.Storage{
+		BootVolume: &infrav1alpha1.DiskSpec{Disk: "scsi0", SizeGB: 10},
+	}
+
+	storages := []proxmox.StorageStatus{
+		{
+			Name:    "local-foo",
+			Enabled: true,
+			Active:  true,
+			Shared:  false,
+			Content: "images",
+			Avail:   1 << 40,
+		},
+	}
+
+	proxmoxClient.EXPECT().
+		ListNodeStorages(ctx, nodeName).
+		Return(storages, nil).
+		Once()
+
+	boot, additional, err := ensureStorageSelection(ctx, machineScope, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, "local-foo", boot)
+	require.Equal(t, "local-foo", additional)
+
+	hashNow := disksSpecHash(pm.Spec.Disks)
+	require.NotNil(t, pm.Status.StorageSelection)
+	require.Equal(t, nodeName, pm.Status.StorageSelection.Node)
+	require.Equal(t, "local-foo", pm.Status.StorageSelection.BootStorage)
+	require.Equal(t, "local-foo", pm.Status.StorageSelection.AdditionalStorage)
+	require.Equal(t, hashNow, pm.Status.StorageSelection.DisksHash)
+}
+
+func TestSelectNodeStorages_RespectsReservedUsage(t *testing.T) {
+	ctx := context.Background()
+
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
+
+	nodeName := "node1"
+	pm := machineScope.ProxmoxMachine
+	pm.Spec.Disks = &infrav1alpha1.Storage{
+		BootVolume:        &infrav1alpha1.DiskSpec{Disk: "scsi0", SizeGB: 10},
+		AdditionalVolumes: []infrav1alpha1.DiskSpec{{Disk: "scsi1", SizeGB: 20}},
+	}
+	// Two storages with same VirtualAvail, but one has reserved usage of 20GB from another machine.
+	storages := []proxmox.StorageStatus{
+		{
+			Name:         "ssd_a",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        100 << 30, // 100 GiB physical free
+			VirtualAvail: 80 << 30,  // 80 GiB effective free
+		},
+		{
+			Name:         "ssd_b",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        100 << 30, // 100 GiB physical free
+			VirtualAvail: 100 << 30, // 100 GiB effective free
+		},
+	}
+
+	proxmoxClient.EXPECT().ListNodeStorages(ctx, nodeName).Return(storages, nil).Once()
+
+	boot, add, err := selectNodeStorages(ctx, machineScope, nodeName)
+	require.NoError(t, err)
+
+	// Because ssd_a has 20GB reserved, ssd_b should be chosen for additional.
+	require.Equal(t, "ssd_b", add)
+	// Boot should be next best (ssd_a).
+	require.Equal(t, "ssd_a", boot)
 }

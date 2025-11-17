@@ -55,4 +55,13 @@ type StorageStatus struct {
 	Type         string
 	Used         uint64
 	Total        uint64
+
+	// VirtualAllocated is the sum of provisioned sizes (in bytes) for all
+	// volumes on this storage, derived from the storage content API.
+	VirtualAllocated uint64
+
+	// VirtualAvail is the remaining capacity (in bytes) based on provisioned
+	// sizes: Total - VirtualAllocated. Scheduler and higher-level logic should
+	// use this field instead of Avail when comparing storages.
+	VirtualAvail uint64
 }

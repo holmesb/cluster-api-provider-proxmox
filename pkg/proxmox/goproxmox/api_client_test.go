@@ -778,14 +778,15 @@ func TestProxmoxAPIClient_ListNodeStorages(t *testing.T) {
 		newJSONResponder(200, proxmox.Node{}),
 	)
 
-	// Node.Storages(ctx) hits /nodes/test/storage
+	// Storage list (node.Storages(ctx)) hits /nodes/test/storage.
 	httpmock.RegisterResponder(
 		http.MethodGet,
-		`=~/nodes/test/storage`,
+		`=~/nodes/test/storage$`,
 		newJSONResponder(200, []interface{}{
 			map[string]interface{}{
 				"node":          "test",
 				"storage":       "local-lvm",
+				"name":          "local-lvm",
 				"enabled":       1,
 				"used_fraction": 0.5,
 				"active":        1,
@@ -795,6 +796,21 @@ func TestProxmoxAPIClient_ListNodeStorages(t *testing.T) {
 				"type":          "lvmthin",
 				"used":          500_000_000,
 				"total":         1_500_000_000,
+			},
+		}),
+	)
+
+	// Node.StorageContent(ctx, "local-lvm") hits /nodes/test/storage/local-lvm/content
+	// We simulate two volumes with sizes that add up to 750 MiB.
+	httpmock.RegisterResponder(
+		http.MethodGet,
+		`=~/nodes/test/storage/local-lvm/content`,
+		newJSONResponder(200, []interface{}{
+			map[string]interface{}{
+				"size": 500_000_000,
+			},
+			map[string]interface{}{
+				"size": 250_000_000,
 			},
 		}),
 	)
@@ -815,4 +831,86 @@ func TestProxmoxAPIClient_ListNodeStorages(t *testing.T) {
 	require.Equal(t, uint64(500_000_000), s.Used)
 	require.Equal(t, uint64(1_500_000_000), s.Total)
 	require.InDelta(t, 0.5, s.UsedFraction, 0.0001)
+
+	// New fields populated from storage content:
+	require.Equal(t, uint64(750_000_000), s.VirtualAllocated)
+	require.Equal(t, uint64(1_500_000_000-750_000_000), s.VirtualAvail)
+}
+
+func TestProxmoxAPIClient_ListNodeStorages_NodeError(t *testing.T) {
+	client := newTestClient(t)
+
+	httpmock.RegisterResponder(
+		http.MethodGet,
+		`=~/nodes/test/status`,
+		httpmock.NewStringResponder(http.StatusInternalServerError, ""),
+	)
+
+	storages, err := client.ListNodeStorages(context.Background(), "test")
+	require.Error(t, err)
+	require.Nil(t, storages)
+	require.Contains(t, err.Error(), "cannot find node with name test")
+}
+
+func TestProxmoxAPIClient_ListNodeStorages_StoragesError(t *testing.T) {
+	client := newTestClient(t)
+
+	httpmock.RegisterResponder(
+		http.MethodGet,
+		`=~/nodes/test/status`,
+		newJSONResponder(http.StatusOK, proxmox.Node{}),
+	)
+
+	httpmock.RegisterResponder(
+		http.MethodGet,
+		`=~/nodes/test/storage$`,
+		httpmock.NewStringResponder(http.StatusInternalServerError, ""),
+	)
+
+	storages, err := client.ListNodeStorages(context.Background(), "test")
+	require.Error(t, err)
+	require.Nil(t, storages)
+	require.Contains(t, err.Error(), "cannot list storages for node test")
+}
+
+func TestProxmoxAPIClient_ListNodeStorages_ContentError(t *testing.T) {
+	client := newTestClient(t)
+
+	httpmock.RegisterResponder(
+		http.MethodGet,
+		`=~/nodes/test/status`,
+		newJSONResponder(http.StatusOK, proxmox.Node{}),
+	)
+
+	httpmock.RegisterResponder(
+		http.MethodGet,
+		`=~/nodes/test/storage$`,
+		newJSONResponder(http.StatusOK, []interface{}{
+			map[string]interface{}{
+				"node":          "test",
+				"storage":       "local-lvm",
+				"name":          "local-lvm",
+				"enabled":       1,
+				"used_fraction": 0.5,
+				"active":        1,
+				"content":       "images,rootdir",
+				"shared":        0,
+				"avail":         1_000_000_000,
+				"type":          "lvmthin",
+				"used":          500_000_000,
+				"total":         1_500_000_000,
+			},
+		}),
+	)
+
+	httpmock.RegisterResponder(
+		http.MethodGet,
+		`=~/nodes/test/storage/local-lvm/content`,
+		httpmock.NewStringResponder(http.StatusInternalServerError, ""),
+	)
+
+	storages, err := client.ListNodeStorages(context.Background(), "test")
+	require.Error(t, err)
+	require.Nil(t, storages)
+	require.Contains(t, err.Error(), "cannot list content for storage local-lvm on node test")
 }

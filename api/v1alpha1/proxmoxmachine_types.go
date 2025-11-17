@@ -470,6 +470,35 @@ type AdditionalNetworkDevice struct {
 	InterfaceConfig `json:",inline"`
 }
 
+// StorageSelectionStatus records the result of automatic storage selection
+// for a single ProxmoxMachine. Once boot and additional storage pools have
+// been chosen for this machine, they are persisted here and reused across
+// reconciles until the disks spec changes.
+type StorageSelectionStatus struct {
+	// Node is the Proxmox node name on which this machine was scheduled when
+	// the storage decision was made.
+	// +optional
+	Node string `json:"node,omitempty"`
+
+	// BootStorage is the name of the storage pool selected for the boot/clone
+	// volume when automatic storage selection is used.
+	// +optional
+	BootStorage string `json:"bootStorage,omitempty"`
+
+	// AdditionalStorage is the name of the storage pool selected for
+	// automatically placed additional volumes when no per-volume or
+	// machine-level storage overrides are set.
+	// +optional
+	AdditionalStorage string `json:"additionalStorage,omitempty"`
+
+	// DisksHash is an opaque hash of the disks-related portion of the
+	// ProxmoxMachine spec that was used when this storage selection was
+	// computed. If the current spec hash differs, the controller should
+	// recompute storage selection and update this status.
+	// +optional
+	DisksHash string `json:"disksHash,omitempty"`
+}
+
 // ProxmoxMachineStatus defines the observed state of a ProxmoxMachine.
 type ProxmoxMachineStatus struct {
 	// Ready indicates the Docker infrastructure has been provisioned and is ready.
@@ -496,6 +525,13 @@ type ProxmoxMachineStatus struct {
 	// network interfaces.
 	// +optional
 	Network []NetworkStatus `json:"network,omitempty"`
+
+	// StorageSelection records any automatically derived storage selection for
+	// this machine (boot and additional volumes) so that decisions are stable
+	// across reconciles. When the disks spec changes, the controller may
+	// recompute this selection and update the status.
+	// +optional
+	StorageSelection *StorageSelectionStatus `json:"storageSelection,omitempty"`
 
 	// ProxmoxNode is the name of the proxmox node, which was chosen for this
 	// machine to be deployed on.

@@ -206,22 +206,27 @@ CAPMOX can either use explicit storage pools you configure, or automatically sel
 
 If you set `.spec.storage` on a `ProxmoxMachine`, or `storage` on an additional volume, that value is used as-is for cloning and volume creation. In that case, no automatic storage selection is performed.
 
-#### Automatic storage selection (boot volume)
+#### Automatic storage selection (overview)
 
-If no storage is specified at machine level (`.spec.storage` empty) and the clone is selected via tags (`templateSelector`), the provider will:
+If no storage is specified at machine level (`.spec.storage` empty) and no per-volume `storage` is set, the provider will:
 
-1. First, select a node for the VM using the existing scheduler (memory and replica-aware behaviour described earlier in this document).
-2. Then, on that node, query all storage pools and filter to those which are:
+1. Select a node for the VM using the existing scheduler (memory- and replica-aware behaviour described earlier in this document).
+2. On that node, list all storages and filter to pools that are:
     * enabled and active,
     * not shared (`shared=false`),
     * and whose `content` includes `images`.
+3. For each candidate pool, compute an **effective free capacity**:
+   * Start from the pool's *virtual* free capacity (derived from Proxmox storage content, e.g. thin-provisioned backends) when available, otherwise fall back to the pool's reported free bytes (`avail`).
+   * Subtract the sizes of auto-selected additional volumes from **other** `ProxmoxMachine`s on the same node that:
+     * are not Ready yet,
+     * have their persisted `status.storageSelection.additionalStorage` set to that pool, and
+     * do not override storage at machine or volume level.
+   * This behaves like a "soft reservation" so that new machines are biased towards pools that are not already committed to large additional volumes from other pending machines.
+4. Derive a **boot storage** pool and an **additional storage** pool for that machine. **boot storage** pool and an **additional storage** pool for that machine.
 
-From the remaining local pools:
+This storage selection is **persisted per `ProxmoxMachine`** in its status. As long as the VM stays on the same node and the disks spec does not change, the same boot/additional pools are reused across reconciles for that machine, even if other machines are created and storage utilisation changes.
 
-* If there is more than one candidate, the **boot volume** (clone storage) is placed on the pool with the **second-highest** free space (`avail`).
-* If there is only one candidate, the boot volume uses that pool.
-
-This keeps the “largest” pool primarily available for data / additional volumes where possible.
+If no eligible pools are found, storage selection fails and the machine reconcile will surface an error.
 
 #### Automatic storage selection (additional volumes)
 
@@ -229,13 +234,33 @@ For additional volumes (defined under `.spec.disks.additionalVolumes`):
 
 * If `storage` is set on the volume, that value is used.
 * Otherwise, if `.spec.storage` is set on the machine, that value is used.
-* Otherwise (no storage anywhere), the same node-local storage candidates are retrieved as above, and the volume is placed on the pool with the **highest** free space (`avail`).
+* Otherwise (no storage anywhere), CAPMOX uses the **machine’s persisted storage selection**:
+  * When the selection is first computed, CAPMOX:
+  * Determines the **largest additional volume size** requested on that machine.
+  * Selects the first candidate pool (by effective free capacity) that has **enough free bytes to fit that volume**.
+    * Persists this as the machine’s `additionalStorage` pool in status.
+  * All auto-selected additional volumes on that machine then use this persisted `additionalStorage` pool.
 
-This means:
+If no candidate pool has sufficient capacity to fit the largest additional volume, reconcile fails with an error indicating that no local image-capable storage on that node can fit the requested additional volumes.
 
-* Boot volume → second-largest local pool (when there are at least two).
-* Additional volumes → largest local pool.
-* All automatically selected pools are **local, non-shared** and support `images` content.
+This means that for a given machine, the automatically chosen pool for additional volumes is stable over time and will not change just because other workloads are created later. CAPMOX does not move existing volumes between pools if a "better" pool appears afterwards.
+
+#### Automatic storage selection (boot volume)
+
+For the boot/clone volume (when `.spec.storage` is empty):
+
+* On the initial selection, CAPMOX will:
+  * Try to place the boot volume on a **different pool** from the additional volumes, as long as:
+  * That pool is one of the eligible node-local image-capable pools, and
+  * It has enough free capacity to fit the boot volume.
+* If no such alternative pool exists (or the boot size is not known), the boot volume will use the same pool as the additional volumes.
+* The chosen boot storage pool is then **persisted in status** alongside the additional storage pool and reused for subsequent reconciles of that machine.
+
+This means, in the common case where multiple local pools exist and both boot and data disks are large:
+
+* Additional volumes are placed on the pool with the **most effective free capacity** that can fit the largest additional volume at the time the machine is first reconciled.
+* The boot volume is placed on another pool that can also fit its size, when such a pool exists, to help spread I/O across pools.
+* Subsequent changes in cluster storage utilisation do **not** change the boot/additional pool choices for that existing machine.
 
 If you want to avoid this behaviour for a particular machine, set `.spec.storage` explicitly, or specify `storage` on your additional volumes.
 

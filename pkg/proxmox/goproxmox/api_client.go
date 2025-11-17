@@ -330,6 +330,28 @@ func (c *APIClient) GetReservableMemoryBytes(ctx context.Context, nodeName strin
 	return reservableMemory, nil
 }
 
+// nodeStorageVolume represents a single volume entry returned by
+// /nodes/{node}/storage/{storage}/content for the purposes of computing
+// virtual allocation. We only care about Size and Volid so that JSON
+// unmarshalling ignores fields like ctime that may change type.
+type nodeStorageVolume struct {
+	Size  uint64 `json:"size,omitempty"`
+	Volid string `json:"volid,omitempty"`
+}
+
+// getNodeStorageContent lists volumes on the given node/storage using the
+// underlying proxmox client directly. This avoids the go-proxmox
+// StorageContent type, which is sensitive to schema changes in fields we do
+// not use (for example, ctime sometimes being returned as a string).
+func (c *APIClient) getNodeStorageContent(ctx context.Context, nodeName, storageName string) ([]nodeStorageVolume, error) {
+	path := fmt.Sprintf("/nodes/%s/storage/%s/content", nodeName, storageName)
+	var content []nodeStorageVolume
+	if err := c.Client.Get(ctx, path, &content); err != nil {
+		return nil, err
+	}
+	return content, nil
+}
+
 // ListNodeStorages lists all storages available on the given node and returns a
 // simplified view used by the scheduler.
 func (c *APIClient) ListNodeStorages(ctx context.Context, nodeName string) ([]capmox.StorageStatus, error) {
@@ -345,7 +367,8 @@ func (c *APIClient) ListNodeStorages(ctx context.Context, nodeName string) ([]ca
 
 	result := make([]capmox.StorageStatus, 0, len(storages))
 	for _, s := range storages {
-		result = append(result, capmox.StorageStatus{
+		// Base status as reported by the storage list API.
+		status := capmox.StorageStatus{
 			Node:         s.Node,
 			Name:         s.Name,
 			Enabled:      s.Enabled == 1,
@@ -357,7 +380,29 @@ func (c *APIClient) ListNodeStorages(ctx context.Context, nodeName string) ([]ca
 			Type:         s.Type,
 			Used:         s.Used,
 			Total:        s.Total,
-		})
+		}
+
+		vols, err := c.getNodeStorageContent(ctx, nodeName, s.Name)
+		if err != nil {
+			return nil, fmt.Errorf("cannot list content for storage %s on node %s: %w", s.Name, nodeName, err)
+		}
+
+		var virtualAllocated uint64
+		for _, vol := range vols {
+			virtualAllocated += vol.Size
+		}
+
+		status.VirtualAllocated = virtualAllocated
+
+		if status.Total >= status.VirtualAllocated {
+			status.VirtualAvail = status.Total - status.VirtualAllocated
+		} else {
+			// Pathological case: reported allocated > total; treat as full so the
+			// scheduler will naturally prefer other pools.
+			status.VirtualAvail = 0
+		}
+
+		result = append(result, status)
 	}
 
 	return result, nil

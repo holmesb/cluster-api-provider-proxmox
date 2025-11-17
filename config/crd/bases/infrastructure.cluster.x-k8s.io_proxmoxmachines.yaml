@@ -950,6 +950,37 @@ spec:
                 description: RetryAfter tracks the time we can retry queueing a task.
                 format: date-time
                 type: string
+              storageSelection:
+                description: |-
+                  StorageSelection records any automatically derived storage selection for
+                  this machine (boot and additional volumes) so that decisions are stable
+                  across reconciles. When the disks spec changes, the controller may
+                  recompute this selection and update the status.
+                properties:
+                  additionalStorage:
+                    description: |-
+                      AdditionalStorage is the name of the storage pool selected for
+                      automatically placed additional volumes when no per-volume or
+                      machine-level storage overrides are set.
+                    type: string
+                  bootStorage:
+                    description: |-
+                      BootStorage is the name of the storage pool selected for the boot/clone
+                      volume when automatic storage selection is used.
+                    type: string
+                  disksHash:
+                    description: |-
+                      DisksHash is an opaque hash of the disks-related portion of the
+                      ProxmoxMachine spec that was used when this storage selection was
+                      computed. If the current spec hash differs, the controller should
+                      recompute storage selection and update this status.
+                    type: string
+                  node:
+                    description: |-
+                      Node is the Proxmox node name on which this machine was scheduled when
+                      the storage decision was made.
+                    type: string
+                type: object
               taskRef:
                 description: |-
                   TaskRef is a managed object reference to a Task related to the ProxmoxMachine.
