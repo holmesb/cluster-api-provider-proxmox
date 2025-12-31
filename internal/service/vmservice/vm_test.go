@@ -1760,3 +1760,184 @@ func TestSelectNodeStorages_RespectsReservedUsage(t *testing.T) {
 	// Boot should be next best (ssd_a).
 	require.Equal(t, "ssd_a", boot)
 }
+
+func TestSelectNodeStorages_BootOnly_UsesBestPool(t *testing.T) {
+	ctx := context.Background()
+
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
+
+	nodeName := "node1"
+	pm := machineScope.ProxmoxMachine
+	pm.Spec.Disks = &infrav1alpha1.Storage{
+		BootVolume: &infrav1alpha1.DiskSpec{Disk: "scsi0", SizeGB: 50},
+	}
+
+	storages := []proxmox.StorageStatus{
+		{
+			Name:         "slow",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        100 << 30,
+			VirtualAvail: 100 << 30,
+		},
+		{
+			Name:         "fast",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        200 << 30,
+			VirtualAvail: 200 << 30,
+		},
+	}
+
+	proxmoxClient.EXPECT().ListNodeStorages(ctx, nodeName).Return(storages, nil).Once()
+
+	boot, add, err := selectNodeStorages(ctx, machineScope, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, "fast", boot)
+	require.Equal(t, "fast", add)
+}
+
+func TestSelectNodeStorages_BootOnly_NoSize_UsesBestPool(t *testing.T) {
+	ctx := context.Background()
+
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
+
+	nodeName := "node1"
+	pm := machineScope.ProxmoxMachine
+	pm.Spec.Disks = &infrav1alpha1.Storage{
+		BootVolume: &infrav1alpha1.DiskSpec{Disk: "scsi0"},
+	}
+
+	storages := []proxmox.StorageStatus{
+		{
+			Name:         "slow",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        100 << 30,
+			VirtualAvail: 100 << 30,
+		},
+		{
+			Name:         "fast",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        200 << 30,
+			VirtualAvail: 200 << 30,
+		},
+	}
+
+	proxmoxClient.EXPECT().ListNodeStorages(ctx, nodeName).Return(storages, nil).Once()
+
+	boot, add, err := selectNodeStorages(ctx, machineScope, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, "fast", boot)
+	require.Equal(t, "fast", add)
+}
+
+func TestSelectNodeStorages_AdditionalTooBig_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
+
+	nodeName := "node1"
+	pm := machineScope.ProxmoxMachine
+	pm.Spec.Disks = &infrav1alpha1.Storage{
+		BootVolume:        &infrav1alpha1.DiskSpec{Disk: "scsi0", SizeGB: 10},
+		AdditionalVolumes: []infrav1alpha1.DiskSpec{{Disk: "scsi1", SizeGB: 3000}},
+	}
+
+	storages := []proxmox.StorageStatus{
+		{
+			Name:         "store1",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        100 << 30,
+			VirtualAvail: 100 << 30,
+		},
+	}
+
+	proxmoxClient.EXPECT().ListNodeStorages(ctx, nodeName).Return(storages, nil).Once()
+
+	_, _, err := selectNodeStorages(ctx, machineScope, nodeName)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "additional volumes")
+}
+
+func TestSelectNodeStorages_BootTooBig_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
+
+	nodeName := "node1"
+	pm := machineScope.ProxmoxMachine
+	pm.Spec.Disks = &infrav1alpha1.Storage{
+		BootVolume: &infrav1alpha1.DiskSpec{Disk: "scsi0", SizeGB: 3000},
+	}
+
+	storages := []proxmox.StorageStatus{
+		{
+			Name:         "store1",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        100 << 30,
+			VirtualAvail: 100 << 30,
+		},
+	}
+
+	proxmoxClient.EXPECT().ListNodeStorages(ctx, nodeName).Return(storages, nil).Once()
+
+	_, _, err := selectNodeStorages(ctx, machineScope, nodeName)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "boot volume")
+}
+
+func TestSelectNodeStorages_FallsBackToAvailWhenVirtualZero(t *testing.T) {
+	ctx := context.Background()
+
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
+
+	nodeName := "node1"
+	pm := machineScope.ProxmoxMachine
+	pm.Spec.Disks = &infrav1alpha1.Storage{
+		BootVolume: &infrav1alpha1.DiskSpec{Disk: "scsi0", SizeGB: 10},
+	}
+
+	storages := []proxmox.StorageStatus{
+		{
+			Name:         "thin",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        100 << 30,
+			VirtualAvail: 0,
+		},
+		{
+			Name:         "dir",
+			Enabled:      true,
+			Active:       true,
+			Shared:       false,
+			Content:      "images",
+			Avail:        20 << 30,
+			VirtualAvail: 20 << 30,
+		},
+	}
+
+	proxmoxClient.EXPECT().ListNodeStorages(ctx, nodeName).Return(storages, nil).Once()
+
+	boot, add, err := selectNodeStorages(ctx, machineScope, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, "thin", boot)
+	require.Equal(t, "thin", add)
+}

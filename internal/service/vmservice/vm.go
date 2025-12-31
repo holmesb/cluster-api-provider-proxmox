@@ -973,6 +973,11 @@ func selectNodeStorages(
 		}
 	}
 
+	logger.Info("storage sizing inputs",
+		"bootSizeBytes", bootSizeBytes,
+		"largestAdditionalSizeBytes", largestAdditionalSizeBytes,
+	)
+
 	sort.Slice(candidates, func(i, j int) bool {
 		freeBytesI := effectiveFree(candidates[i])
 		freeBytesJ := effectiveFree(candidates[j])
@@ -998,7 +1003,14 @@ func selectNodeStorages(
 
 	// Additional volumes are typically the largest, so we prioritise finding
 	// a pool that can actually fit the biggest configured additional volume.
-	if largestAdditionalSizeBytes > 0 {
+	hasAdditionalVolumes := largestAdditionalSizeBytes > 0
+	logger.Info("storage sizing decision",
+		"bootSizeBytes", bootSizeBytes,
+		"largestAdditionalSizeBytes", largestAdditionalSizeBytes,
+		"hasAdditionalVolumes", hasAdditionalVolumes,
+	)
+
+	if hasAdditionalVolumes {
 		name, ok := pickWithCapacity(largestAdditionalSizeBytes, "")
 		if !ok {
 			return "", "", fmt.Errorf(
@@ -1009,16 +1021,36 @@ func selectNodeStorages(
 		}
 		additionalStorage = name
 	} else {
-		// No additional volumes: just pick the pool with the most free space.
-		additionalStorage = candidates[0].Name
+		// No additional volumes: we only care about a pool that can fit the boot
+		// volume (if a size is known). If no boot size is set either, we fall
+		// back to the pool with the most free space.
+		if bootSizeBytes > 0 {
+			name, ok := pickWithCapacity(bootSizeBytes, "")
+			if !ok {
+				return "", "", fmt.Errorf(
+					"no eligible local image storages on node %s have enough capacity for boot volume (required=%d bytes)",
+					nodeName,
+					bootSizeBytes,
+				)
+			}
+			additionalStorage = name
+		} else {
+			additionalStorage = candidates[0].Name
+		}
 	}
 
 	// For the boot volume we prefer a different pool when possible, but we
 	// don't hard-fail if only the additional pool can satisfy the requirement.
 	if bootSizeBytes > 0 {
-		if name, ok := pickWithCapacity(bootSizeBytes, additionalStorage); ok {
-			bootStorage = name
+		if hasAdditionalVolumes {
+			if name, ok := pickWithCapacity(bootSizeBytes, additionalStorage); ok {
+				bootStorage = name
+			} else {
+				bootStorage = additionalStorage
+			}
 		} else {
+			// No additional volumes: use the same pool we selected (and capacity-
+			// checked) for the boot volume.
 			bootStorage = additionalStorage
 		}
 	} else {
