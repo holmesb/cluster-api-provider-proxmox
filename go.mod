@@ -29,8 +29,6 @@ require (
 	sigs.k8s.io/controller-runtime v0.20.4
 )
 
-require github.com/docker/docker v28.0.2+incompatible
-
 require (
 	al.essio.dev/pkg/shellescape v1.5.1 // indirect
 	cel.dev/expr v0.18.0 // indirect
@@ -60,7 +58,6 @@ require (
 	github.com/diskfs/go-diskfs v1.5.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/djherbis/times v1.6.0 // indirect
-	github.com/docker/docker v28.0.2+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-metrics v0.0.1 // indirect
 	github.com/docker/go-units v0.4.0 // indirect

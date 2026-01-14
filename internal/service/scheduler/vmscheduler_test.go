@@ -111,6 +111,7 @@ func TestSelectNode(t *testing.T) {
 func TestSelectNodeEvenlySpread(t *testing.T) {
 	// Verify that VMs are scheduled evenly across nodes when memory allows
 	allowedNodes := []string{"pve1", "pve2", "pve3"}
+	templateMap := map[string]int32{}
 	var locations []infrav1.NodeLocation
 	const requestMiB = 8
 	availableMem := map[string]uint64{
@@ -138,7 +139,7 @@ func TestSelectNodeEvenlySpread(t *testing.T) {
 
 			client := fakeResourceClient(availableMem)
 
-			node, err := selectNode(context.Background(), client, proxmoxMachine, locations, allowedNodes, &infrav1.SchedulerHints{})
+			node, _, err := selectNode(context.Background(), client, proxmoxMachine, locations, allowedNodes, &infrav1.SchedulerHints{}, templateMap)
 			require.NoError(t, err)
 			require.Equal(t, expectedNode, node)
 
@@ -158,7 +159,7 @@ func TestSelectNodeEvenlySpread(t *testing.T) {
 
 		client := fakeResourceClient(availableMem)
 
-		node, err := selectNode(context.Background(), client, proxmoxMachine, locations, allowedNodes, &infrav1.SchedulerHints{})
+		node, _, err := selectNode(context.Background(), client, proxmoxMachine, locations, allowedNodes, &infrav1.SchedulerHints{}, templateMap)
 		require.ErrorAs(t, err, &InsufficientMemoryError{})
 		require.Empty(t, node)
 
