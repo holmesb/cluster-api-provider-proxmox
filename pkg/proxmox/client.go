@@ -63,4 +63,9 @@ type Client interface {
 	CloudInitStatus(ctx context.Context, vm *proxmox.VirtualMachine) (bool, error)
 
 	QemuAgentStatus(ctx context.Context, vm *proxmox.VirtualMachine) error
+
+	// Get performs a raw GET request against the Proxmox API and unmarshals the response into out.
+	//
+	// Path should be a Proxmox API path starting with '/', e.g. "/cluster/mapping/pci".
+	Get(ctx context.Context, path string, out any) error
 }

@@ -310,6 +310,120 @@ be set or leave the default `false`. In explicit mode you’re telling CAPMOX ex
 That implicitly pins the clone to the node where that template resides, regardless of whether the backing storage is 
 local or shared.
 
+## GPU passthrough using Proxmox PCI Resource Mappings
+CAPMOX can attach PCI devices to VMs by referencing **Proxmox PCI Resource Mappings** ("mapped devices"), rather than 
+hard-coding PCI addresses.
+
+### Supply: create Proxmox PCI mappings
+Create one Proxmox PCI [Resource Mapping](https://pve.proxmox.com/wiki/QEMU/KVM_Virtual_Machines#resource_mapping) per 
+physical device. CAPMOX expects each mapping to include the below description field containing `;` separated key/value 
+pairs. Example `description` (single line):
+
+```
+class=gpu;model_key=10de:1234;chip=ExampleGPUChip;product=Example GPU Product Name
+```
+
+* `class` is a device type (eg `gpu`).
+* `model_key` is a stable PCI **vendor ID:device ID** identifier (as commonly shown by tools like `lspci -nn`). Can also find vendor/device IDs at https://devicehunt.com/ or https://pci-ids.ucw.cz/.
+* `chip` / `product` are informational for human intuition, aren't compulsory, nor relied on for CAPMOX selection.
+
+All fields are case-insensitive (can be either upper or lower).
+
+### Demand: request PCI devices from a machine
+A `ProxmoxMachine` (or template) can request PCI devices via `pciDeviceRequests`. Example request for “any GPU”:
+
+```yaml
+kind: ProxmoxMachine
+spec:
+  pciDeviceRequests:
+    - name: gpu
+      count: 1
+      selector:
+        matchLabels:
+          class: gpu
+```
+
+Example request for a specific GPU model:
+```yaml
+kind: ProxmoxMachine
+spec:
+  pciDeviceRequests:
+    - name: gpu
+      count: 1
+      selector:
+        matchLabels:
+          class: gpu
+          model_key: "10de:1234"  # vendor ID:device ID - see https://devicehunt.com/ or lspci -nn
+```
+
+Notes:
+* `model_key` contains `:` because by default in PCI notation, these are represented as **vendor ID:device ID**. CAPMOX matches selectors against above `description` fields case-insensitively.
+* Placement is **claim-driven**: CAPMOX binds a `ProxmoxPCIDeviceClaim` to a free mapping first, then places the VM on the Proxmox node that owns that mapping.
+* CAPMOX uses Kubernetes **Lease** objects internally as the lock for each Proxmox mapping ID. Leases prevent two claims from binding the same mapping concurrently (race-free allocation) and are created/deleted automatically by the controller.
+
+### Demand: request GPU workers in ClusterClass
+Currently, ClusterClasses only support the GPU PCI device type. GPU passthrough is achieved using per-MachineDeployment 
+overrides. We avoid maintaining multiple per-GPU model MachineDeploymentClasses, CAPMOX has a single GPU worker class 
+and users can specify an override variable per MachineDeployment. CAPMOX ClusterClasses have a variable:
+```yaml
+kind: ClusterClass
+spec:
+  topology:
+    variables:
+      - name: gpuModelKey
+        required: false
+        schema:
+          openAPIV3Schema:
+            type: string
+```
+
+The `gpuModelKey` variable drives a ClusterClass patch to the GPU worker MachineDeploymentClass:
+```yaml
+kind: ClusterClass
+spec:
+  topology:
+    patches:
+      - name: gpu-model-key
+        enabledIf: "{{ if .gpuModelKey }}true{{ end }}"
+        definitions:
+          - selector:
+              apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+              kind: ProxmoxMachineTemplate
+              matchResources:
+                machineDeploymentClass:
+                  names: ["proxmox-worker-gpu"]
+            jsonPatches:
+              - op: add
+                path: /spec/template/spec/pciDeviceRequests/0/selector/matchLabels/model_key
+                valueFrom:
+                  variable: gpuModelKey
+```
+
+In your Cluster, you can define multiple GPU MachineDeployments. They can be of two types: generic and model-specific. 
+Both use the **same MachineDeploymentClass**. Former will select any GPU PCIe device for which a Proxmox Resource 
+Mapping exists (see above). Latter contains a `gpuModelKey` override specifying the GPU model you'd  like these workers 
+to use:
+```yaml
+kind: Cluster
+spec:
+  topology:
+    workers:
+      machineDeployments:
+        - class: proxmox-worker-gpu
+          name: worker-gpu-generic
+          replicas: 2
+        - class: proxmox-worker-gpu
+          name: worker-gpu-model-1234
+          replicas: 2
+          variables:
+            overrides:
+              - name: gpuModelKey
+                value: "10de:1234"  # vendor ID:device ID - see https://devicehunt.com/ or lspci -nn
+```
+In above case, two worker nodes will be created with any available GPU, and two with a "10de:1234" model. Any number of 
+specific GPU model machineDeployments can be requested this way, all using the same `proxmox-worker-gpu` 
+MachineDeploymentClass.
+
 ## Proxmox RBAC with least privileges
 
 For the Proxmox API user/token you create for CAPMOX, these are the minimum required permissions.

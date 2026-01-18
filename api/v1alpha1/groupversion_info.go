@@ -39,7 +39,10 @@ var (
 	// This new pattern may also be useful for reducing dependencies in provider API packages.
 	// For more information see the implementers guide.
 	// https://main.cluster-api.sigs.k8s.io/developer/providers/implementers-guide/create_api#registering-apis-in-the-scheme
-	objectTypes = []runtime.Object{}
+	objectTypes = []runtime.Object{
+		&ProxmoxPCIDeviceClaim{},
+		&ProxmoxPCIDeviceClaimList{},
+	}
 )
 
 func addKnownTypes(scheme *runtime.Scheme) error {

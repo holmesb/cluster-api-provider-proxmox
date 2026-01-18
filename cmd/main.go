@@ -197,7 +197,35 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager, proxmoxClient capmo
 		return fmt.Errorf("setting up ProxmoxMachine controller: %w", err)
 	}
 
+	var mappingProvider capmox.PCIMappingLister
+	if proxmoxClient != nil {
+		if getter, ok := proxmoxClient.(interface {
+			Get(context.Context, string, any) error
+		}); ok {
+			mappingProvider = &capmox.PCIMappingProvider{API: apiCallerAdapter{c: getter}}
+		}
+	}
+
+	if err := (&controller.ProxmoxPCIDeviceClaimReconciler{
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		Recorder:        mgr.GetEventRecorderFor("proxmoxpcideviceclaim-controller"),
+		MappingProvider: mappingProvider,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up ProxmoxPCIDeviceClaim controller: %w", err)
+	}
+
 	return nil
+}
+
+type apiCallerAdapter struct {
+	c interface {
+		Get(context.Context, string, any) error
+	}
+}
+
+func (a apiCallerAdapter) Get(ctx context.Context, path string, out any) error {
+	return a.c.Get(ctx, path, out)
 }
 
 func setupProxmoxClient(ctx context.Context, logger logr.Logger) (capmox.Client, error) {

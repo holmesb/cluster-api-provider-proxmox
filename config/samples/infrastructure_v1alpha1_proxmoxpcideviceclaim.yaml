@@ -1,0 +1,35 @@
+
+
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: ProxmoxPCIDeviceClaim
+metadata:
+  name: example-gpu-claim
+  namespace: default
+spec:
+  # ClusterName is the CAPI Cluster this claim belongs to.
+  clusterName: example-cluster
+  # Optional: set when you want to constrain allocation to a specific Proxmox node.
+  # preferredProxmoxNode: pve-host04
+  # Selector matches against key=value pairs encoded in the Proxmox mapping "comment" field.
+  # In your supply pipeline, you set that comment to a semicolon-delimited list like:
+  # class=gpu;model_key=10de:1234;chip=ExampleChip;product=Example GPU
+  selector:
+    matchLabels:
+      class: gpu
+  # Optional: identify who is consuming this claim.
+  # consumerRef:
+  #   apiVersion: cluster.x-k8s.io/v1beta1
+  #   kind: Machine
+  #   name: example-gpu-worker-0
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: ProxmoxPCIDeviceClaim
+metadata:
+  name: example-model-1234-claim
+  namespace: default
+spec:
+  clusterName: example-cluster
+  selector:
+    matchLabels:
+      class: gpu
+      model_key: "10de:1234"

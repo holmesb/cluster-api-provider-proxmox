@@ -60,6 +60,34 @@ spec:
               timeout: 300s
         namingStrategy:
            template: "{{ .cluster.name }}-worker-{{ .random }}"
+      - class: proxmox-worker-gpu
+        template:
+          bootstrap:
+            ref:
+              apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+              kind: KubeadmConfigTemplate
+              name: proxmox-clusterclass-v0.1.0-workertemplate
+          infrastructure:
+            ref:
+              apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+              kind: ProxmoxMachineTemplate
+              name: proxmox-clusterclass-v0.1.0-workertemplate-gpu
+          metadata:
+            labels:
+              node-role.kubernetes.io/gpu: ""
+              node-role.kubernetes.io/node: ""
+        machineHealthCheck:
+          maxUnhealthy: 33%
+          nodeStartupTimeout: 15m
+          unhealthyConditions:
+            - type: Ready
+              status: Unknown
+              timeout: 300s
+            - type: Ready
+              status: "False"
+              timeout: 300s
+        namingStrategy:
+          template: "{{ .cluster.name }}-gpu-worker-{{ .random }}"
       - class: proxmox-loadbalancer
         template:
           bootstrap:
@@ -218,6 +246,12 @@ spec:
             type: string
           default: [8.8.8.8, 8.8.4.4]
           example: [8.8.8.8, 8.8.4.4]
+    - name: gpuModelKey
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: string
+          description: "Optional GPU model selector (PCI vendor:device, e.g. 10de:1234). Set per MachineDeployment via variable override to request only GPUs with matching model_key in the Proxmox PCI mapping description."
     - name: allowedNodes
       required: false
       schema:
@@ -466,6 +500,21 @@ spec:
                 workerNode: *machineSpec
                 loadBalancer: *machineSpec
   patches:
+  - name: gpu-model-key
+    description: "Optionally pin GPU worker claims to a specific GPU model_key (PCI vendor:device, e.g. 10de:1234)."
+    enabledIf: "{{ if .gpuModelKey }}true{{ end }}"
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names: ["proxmox-worker-gpu"]
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/pciDeviceRequests/0/selector/matchLabels/model_key
+            valueFrom:
+              variable: gpuModelKey
   - name: disks-init
     description: "Initialise .spec.disks as an empty object for PMTs"
     definitions:
@@ -475,7 +524,7 @@ spec:
           matchResources:
             controlPlane: false
             machineDeploymentClass:
-              names: ["proxmox-worker", "proxmox-loadbalancer"]
+                names: ["proxmox-worker", "proxmox-worker-gpu", "proxmox-loadbalancer"]
         jsonPatches:
           - op: add
             path: /spec/template/spec/disks
@@ -502,7 +551,7 @@ spec:
           matchResources:
             controlPlane: false
             machineDeploymentClass:
-              names: ["proxmox-worker"]
+                names: ["proxmox-worker", "proxmox-worker-gpu"]
         jsonPatches:
           - op: add
             path: /spec/template/spec/disks/additionalVolumes
@@ -526,7 +575,7 @@ spec:
           matchResources:
             controlPlane: false
             machineDeploymentClass:
-              names: ["proxmox-worker"]
+                names: ["proxmox-worker", "proxmox-worker-gpu"]
         jsonPatches:
           - op: add
             path: /spec/template/spec/storage
@@ -764,6 +813,7 @@ spec:
             machineDeploymentClass:
               names:
                 - proxmox-worker
+                - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/localStorage
@@ -813,6 +863,7 @@ spec:
             machineDeploymentClass:
               names:
                 - proxmox-worker
+                - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/templateSelector
@@ -870,6 +921,7 @@ spec:
             machineDeploymentClass:
               names:
                 - proxmox-worker
+                - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/sourceNode
@@ -932,6 +984,7 @@ spec:
             machineDeploymentClass:
               names:
                 - proxmox-worker
+                - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/disks/bootVolume
@@ -1015,6 +1068,7 @@ spec:
             machineDeploymentClass:
               names:
               - proxmox-worker
+              - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/users
@@ -1065,6 +1119,7 @@ spec:
             machineDeploymentClass:
               names:
               - proxmox-worker
+              - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/numSockets
@@ -1113,6 +1168,7 @@ spec:
             machineDeploymentClass:
               names:
               - proxmox-worker
+              - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/numCores
@@ -1130,6 +1186,7 @@ spec:
             machineDeploymentClass:
               names:
               - proxmox-worker
+              - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/numCores
@@ -1161,6 +1218,7 @@ spec:
             machineDeploymentClass:
               names:
               - proxmox-worker
+              - proxmox-worker-gpu
         jsonPatches:
           - op: replace
             path: /spec/template/spec/format
@@ -1209,6 +1267,7 @@ spec:
             machineDeploymentClass:
               names:
               - proxmox-worker
+              - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/memoryMiB
@@ -1257,6 +1316,7 @@ spec:
             machineDeploymentClass:
               names:
               - proxmox-worker
+              - proxmox-worker-gpu
         jsonPatches:
           - op: add
             path: /spec/template/spec/network
@@ -1393,6 +1453,29 @@ spec:
       templateID: 100
       format: qcow2
       full: true
+      network:
+        default:
+          bridge: ${BRIDGE}
+          model: virtio
+---
+kind: ProxmoxMachineTemplate
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+metadata:
+  name: proxmox-clusterclass-v0.1.0-workertemplate-gpu
+spec:
+  template:
+    spec:
+      sourceNode: pve1
+      templateID: 100
+      format: qcow2
+      full: true
+      pciDeviceRequests:
+        - name: gpu
+          selector:
+            matchLabels:
+              class: gpu
+          count: 1
+          pcie: true
       network:
         default:
           bridge: ${BRIDGE}

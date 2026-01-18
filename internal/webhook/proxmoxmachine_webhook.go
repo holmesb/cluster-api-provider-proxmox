@@ -65,6 +65,12 @@ func (p *ProxmoxMachine) ValidateCreate(_ context.Context, obj runtime.Object) (
 		return warnings, err
 	}
 
+	err = validatePCIDevices(machine)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("cannot create proxmox machine %s", machine.GetName()))
+		return warnings, err
+	}
+
 	return warnings, nil
 }
 
@@ -91,6 +97,12 @@ func (p *ProxmoxMachine) ValidateUpdate(_ context.Context, old, newObj runtime.O
 	}
 
 	err = validateNetworks(newMachine)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("cannot update proxmox machine %s", newMachine.GetName()))
+		return warnings, err
+	}
+
+	err = validatePCIDevices(newMachine)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("cannot update proxmox machine %s", newMachine.GetName()))
 		return warnings, err
@@ -209,6 +221,39 @@ func validateNetworks(machine *infrav1.ProxmoxMachine) error {
 		}
 	}
 
+	return nil
+}
+
+func validatePCIDevices(machine *infrav1.ProxmoxMachine) error {
+	if len(machine.Spec.PCIDevices) == 0 {
+		return nil
+	}
+
+	gk, name := machine.GroupVersionKind().GroupKind(), machine.GetName()
+	seen := map[string]int{}
+	for i, dev := range machine.Spec.PCIDevices {
+		if dev.Mapping == "" {
+			return apierrors.NewInvalid(
+				gk,
+				name,
+				field.ErrorList{
+					field.Required(
+						field.NewPath("spec", "pciDevices").Index(i).Child("mapping"),
+						"mapping is required"),
+				})
+		}
+		if j, ok := seen[dev.Mapping]; ok {
+			return apierrors.NewInvalid(
+				gk,
+				name,
+				field.ErrorList{
+					field.Duplicate(
+						field.NewPath("spec", "pciDevices").Index(i).Child("mapping"),
+						machine.Spec.PCIDevices[j].Mapping),
+				})
+		}
+		seen[dev.Mapping] = i
+	}
 	return nil
 }
 

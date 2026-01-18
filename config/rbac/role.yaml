@@ -37,10 +37,23 @@ rules:
   - patch
   - watch
 - apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - infrastructure.cluster.x-k8s.io
   resources:
   - proxmoxclusters
   - proxmoxmachines
+  - proxmoxpcideviceclaims
   verbs:
   - create
   - delete
@@ -54,6 +67,7 @@ rules:
   resources:
   - proxmoxclusters/finalizers
   - proxmoxmachines/finalizers
+  - proxmoxpcideviceclaims/finalizers
   verbs:
   - update
 - apiGroups:
@@ -61,6 +75,7 @@ rules:
   resources:
   - proxmoxclusters/status
   - proxmoxmachines/status
+  - proxmoxpcideviceclaims/status
   verbs:
   - get
   - patch

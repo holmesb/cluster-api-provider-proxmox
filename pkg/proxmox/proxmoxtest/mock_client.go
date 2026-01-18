@@ -1020,6 +1020,48 @@ func (_c *MockClient_UnmountCloudInitISO_Call) RunAndReturn(run func(context.Con
 	return _c
 }
 
+// Get performs a raw GET request against the Proxmox API and unmarshals the response into out.
+func (_m *MockClient) Get(ctx context.Context, path string, out any) error {
+	ret := _m.Called(ctx, path, out)
+	if len(ret) == 0 {
+		panic("no return value specified for Get")
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, any) error); ok {
+		return rf(ctx, path, out)
+	}
+	return ret.Error(0)
+}
+
+// MockClient_Get_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Get'
+type MockClient_Get_Call struct {
+	*mock.Call
+}
+
+// Get is a helper method to define mock.On call
+//   - ctx context.Context
+//   - path string
+//   - out any
+func (_e *MockClient_Expecter) Get(ctx interface{}, path interface{}, out interface{}) *MockClient_Get_Call {
+	return &MockClient_Get_Call{Call: _e.mock.On("Get", ctx, path, out)}
+}
+
+func (_c *MockClient_Get_Call) Run(run func(ctx context.Context, path string, out any)) *MockClient_Get_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string), args[2])
+	})
+	return _c
+}
+
+func (_c *MockClient_Get_Call) Return(_a0 error) *MockClient_Get_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockClient_Get_Call) RunAndReturn(run func(context.Context, string, any) error) *MockClient_Get_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // NewMockClient creates a new instance of MockClient. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewMockClient(t interface {

@@ -132,6 +132,101 @@ type ProxmoxMachineSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:items:Pattern=`^(?i)[a-z0-9_][a-z0-9_\-\+\.]*$`
 	Tags []string `json:"tags,omitempty"`
+
+	// PCIDeviceRequests is the desired PCI passthrough device request list.
+	//
+	// Each request is matched against Proxmox PCI Resource Mappings (by selector over the
+	// mapping description/comment key=value pairs). Allocation is performed via
+	// ProxmoxPCIDeviceClaim + Lease locking.
+	//
+	// The controller records the chosen mapping(s) in status.pciDeviceAllocations.
+	//
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	PCIDeviceRequests []PCIDeviceRequest `json:"pciDeviceRequests,omitempty"`
+
+	// PCIDevices is a list of PCI devices to passthrough to the VM.
+	//
+	// Devices are referenced by Proxmox PCI Resource Mapping name.
+	// This is intended for advanced/manual pinning; prefer PCIDeviceRequests for
+	// automated, race-free allocation.
+	//
+	// "All Functions" passthrough is always enabled by the controller.
+	//
+	// +optional
+	// +listType=map
+	// +listMapKey=mapping
+	PCIDevices []PCIDeviceSpec `json:"pciDevices,omitempty"`
+}
+
+// PCIDeviceRequest defines a logical PCI passthrough request.
+//
+// The selector matches against key=value pairs encoded in the Proxmox mapping comment
+// (semicolon-delimited), for example: class=gpu;model_key=10de:1234
+//
+// The Name is used to correlate requests with allocations.
+// +kubebuilder:validation:XValidation:rule="!has(self.count) || self.count >= 1",message="count must be >= 1"
+type PCIDeviceRequest struct {
+	// Name is a stable identifier for this request (e.g. "gpu").
+	//
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Selector matches eligible Proxmox PCI Resource Mappings.
+	Selector metav1.LabelSelector `json:"selector"`
+
+	// Count is the number of devices to allocate for this request.
+	//
+	// +kubebuilder:default=1
+	// +optional
+	Count *int32 `json:"count,omitempty"`
+
+	// PCIExpress enables PCIe mode for allocated devices (pcie=1).
+	//
+	// +kubebuilder:default=true
+	// +optional
+	PCIExpress *bool `json:"pcie,omitempty"`
+}
+
+// PCIDeviceAllocation records an allocated PCI mapping for a request.
+type PCIDeviceAllocation struct {
+	// Name correlates this allocation to a request name.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// ClaimName is the ProxmoxPCIDeviceClaim used to allocate this mapping.
+	// +optional
+	ClaimName string `json:"claimName,omitempty"`
+
+	// Mapping is the Proxmox PCI Resource Mapping name.
+	// +kubebuilder:validation:MinLength=1
+	Mapping string `json:"mapping"`
+
+	// ProxmoxNode is the Proxmox node on which the mapping resides.
+	// +optional
+	ProxmoxNode string `json:"proxmoxNode,omitempty"`
+
+	// PCIExpress enables PCIe mode for this device (pcie=1).
+	// +kubebuilder:default=true
+	// +optional
+	PCIExpress *bool `json:"pcie,omitempty"`
+}
+
+// PCIDeviceSpec defines a single Proxmox hostpci passthrough device\.
+//
+// Currently only PCIe mode is configurable; all-functions passthrough is enforced.
+type PCIDeviceSpec struct {
+	// Mapping is the Proxmox PCI Resource Mapping name.
+	//
+	// +kubebuilder:validation:MinLength=1
+	Mapping string `json:"mapping"`
+
+	// PCIExpress enables PCIe mode for this device (pcie=1).
+	//
+	// +kubebuilder:default=true
+	// +optional
+	PCIExpress *bool `json:"pcie,omitempty"`
 }
 
 // Storage is the physical storage on the node.
@@ -537,6 +632,15 @@ type ProxmoxMachineStatus struct {
 	// machine to be deployed on.
 	// +optional
 	ProxmoxNode *string `json:"proxmoxNode,omitempty"`
+
+	// PCIDeviceAllocations records any allocated PCI devices (mapping IDs) for this machine.
+	//
+	// This is populated by the controller when PCIDeviceRequests are used.
+	//
+	// +optional
+	// +listType=map
+	// +listMapKey=mapping
+	PCIDeviceAllocations []PCIDeviceAllocation `json:"pciDeviceAllocations,omitempty"`
 
 	// TaskRef is a managed object reference to a Task related to the ProxmoxMachine.
 	// This value is set automatically at runtime and should not be set or

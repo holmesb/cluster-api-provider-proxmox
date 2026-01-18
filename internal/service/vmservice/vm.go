@@ -159,6 +159,91 @@ func diskSlotOccupied(cfg any, slot string) bool {
 	return strings.TrimSpace(fieldValue.String()) != ""
 }
 
+func hostPCISlotValue(cfg any, index int) string {
+	if cfg == nil || index < 0 {
+		return ""
+	}
+	cfgValue := reflect.ValueOf(cfg)
+	if cfgValue.Kind() == reflect.Pointer {
+		cfgValue = cfgValue.Elem()
+	}
+	if !cfgValue.IsValid() {
+		return ""
+	}
+	// Field names depend on the proxmox client struct. We try the common variants.
+	candidates := []string{
+		fmt.Sprintf("Hostpci%d", index),
+		fmt.Sprintf("HostPCI%d", index),
+	}
+	for _, fieldName := range candidates {
+		fieldValue := cfgValue.FieldByName(fieldName)
+		if !fieldValue.IsValid() || fieldValue.Kind() != reflect.String {
+			continue
+		}
+		return strings.TrimSpace(fieldValue.String())
+	}
+	return ""
+}
+
+func desiredHostPCISpecOptions(pciDevices []infrav1alpha1.PCIDeviceSpec) []proxmox.VirtualMachineOption {
+	if len(pciDevices) == 0 {
+		return nil
+	}
+
+	// Keep hostpciN assignment deterministic even if the list order changes.
+	devices := slices.Clone(pciDevices)
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Mapping < devices[j].Mapping })
+
+	opts := make([]proxmox.VirtualMachineOption, 0, len(devices))
+	for i, dev := range devices {
+		pcie := ptr.Deref(dev.PCIExpress, true)
+		value := fmt.Sprintf("mapping=%s,pcie=%d", dev.Mapping, boolToInt(pcie))
+		opts = append(opts, proxmox.VirtualMachineOption{Name: fmt.Sprintf("hostpci%d", i), Value: value})
+	}
+	return opts
+}
+
+func desiredHostPCIDevices(scope *scope.MachineScope) []infrav1alpha1.PCIDeviceSpec {
+	pm := scope.ProxmoxMachine
+	merged := make([]infrav1alpha1.PCIDeviceSpec, 0)
+	seen := map[string]struct{}{}
+
+	// Prefer allocations (from claims) first.
+	for _, a := range pm.Status.PCIDeviceAllocations {
+		m := strings.TrimSpace(a.Mapping)
+		if m == "" {
+			continue
+		}
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		seen[m] = struct{}{}
+		merged = append(merged, infrav1alpha1.PCIDeviceSpec{Mapping: m, PCIExpress: a.PCIExpress})
+	}
+
+	// Then include any explicitly pinned devices.
+	for _, dev := range pm.Spec.PCIDevices {
+		m := strings.TrimSpace(dev.Mapping)
+		if m == "" {
+			continue
+		}
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		seen[m] = struct{}{}
+		merged = append(merged, dev)
+	}
+
+	return merged
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func checkCloudInitStatus(ctx context.Context, machineScope *scope.MachineScope) (requeue bool, err error) {
 	if !machineScope.VirtualMachine.IsRunning() {
 		// skip if the vm is not running.
@@ -328,6 +413,20 @@ func reconcileVirtualMachineConfig(ctx context.Context, machineScope *scope.Mach
 		}
 		if len(machineScope.VirtualMachine.VirtualMachineConfig.TagsSlice) > length {
 			vmOptions = append(vmOptions, proxmox.VirtualMachineOption{Name: optionTags, Value: strings.Join(machineScope.VirtualMachine.VirtualMachineConfig.TagsSlice, ";")})
+		}
+	}
+
+	// PCI devices (hostpciN)
+	if desired := desiredHostPCISpecOptions(desiredHostPCIDevices(machineScope)); len(desired) > 0 {
+		for _, opt := range desired {
+			// hostpciN only exists on the config struct if it was set previously.
+			idxStr := strings.TrimPrefix(opt.Name, "hostpci")
+			idx := -1
+			_, _ = fmt.Sscanf(idxStr, "%d", &idx)
+			current := hostPCISlotValue(vmConfig, idx)
+			if current != opt.Value {
+				vmOptions = append(vmOptions, opt)
+			}
 		}
 	}
 
@@ -541,14 +640,32 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 		}
 	}
 
-	// we have allowedNodes, so we use them to schedule the VM
-	options.Target, templateID, err = selectNextNode(ctx, scope, templateMap, allowedNodes)
-	if err != nil {
-		if errors.As(err, &scheduler.InsufficientMemoryError{}) {
-			scope.SetFailureMessage(err)
-			scope.SetFailureReason(capierrors.InsufficientResourcesMachineError)
+	// If a prior node decision exists (e.g. for PCI mapping allocation), honour it to avoid
+	// diverging between claim binding and VM placement.
+	if scope.ProxmoxMachine.Status.ProxmoxNode != nil && strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode) != "" {
+		chosen := strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode)
+		if len(allowedNodes) > 0 && !slices.Contains(allowedNodes, chosen) {
+			return proxmox.VMCloneResponse{}, fmt.Errorf("chosen proxmox node %q is not in allowedNodes", chosen)
 		}
-		return proxmox.VMCloneResponse{}, err
+		options.Target = chosen
+		if localStorage {
+			// With local storage the template must exist on the target node.
+			if tid, ok := templateMap[chosen]; ok {
+				templateID = tid
+			} else {
+				return proxmox.VMCloneResponse{}, fmt.Errorf("no template found on chosen proxmox node %q", chosen)
+			}
+		}
+	} else {
+		// we have allowedNodes, so we use them to schedule the VM
+		options.Target, templateID, err = selectNextNode(ctx, scope, templateMap, allowedNodes)
+		if err != nil {
+			if errors.As(err, &scheduler.InsufficientMemoryError{}) {
+				scope.SetFailureMessage(err)
+				scope.SetFailureReason(capierrors.InsufficientResourcesMachineError)
+			}
+			return proxmox.VMCloneResponse{}, err
+		}
 	}
 	// if localStorage use same node for Template as Target
 	if localStorage {

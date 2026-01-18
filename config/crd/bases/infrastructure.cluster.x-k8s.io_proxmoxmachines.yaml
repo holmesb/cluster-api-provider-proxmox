@@ -654,6 +654,128 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
+              pciDeviceRequests:
+                description: |-
+                  PCIDeviceRequests is the desired PCI passthrough device request list.
+
+                  Each request is matched against Proxmox PCI Resource Mappings (by selector over the
+                  mapping description/comment key=value pairs). Allocation is performed via
+                  ProxmoxPCIDeviceClaim + Lease locking.
+
+                  The controller records the chosen mapping(s) in status.pciDeviceAllocations.
+                items:
+                  description: |-
+                    PCIDeviceRequest defines a logical PCI passthrough request.
+
+                    The selector matches against key=value pairs encoded in the Proxmox mapping comment
+                    (semicolon-delimited), for example: class=gpu;model_key=10de:1234
+
+                    The Name is used to correlate requests with allocations.
+                  properties:
+                    count:
+                      default: 1
+                      description: Count is the number of devices to allocate for
+                        this request.
+                      format: int32
+                      type: integer
+                    name:
+                      description: Name is a stable identifier for this request (e.g.
+                        "gpu").
+                      minLength: 1
+                      type: string
+                    pcie:
+                      default: true
+                      description: PCIExpress enables PCIe mode for allocated devices
+                        (pcie=1).
+                      type: boolean
+                    selector:
+                      description: Selector matches eligible Proxmox PCI Resource
+                        Mappings.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                  required:
+                  - name
+                  - selector
+                  type: object
+                  x-kubernetes-validations:
+                  - message: count must be >= 1
+                    rule: '!has(self.count) || self.count >= 1'
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              pciDevices:
+                description: |-
+                  PCIDevices is a list of PCI devices to passthrough to the VM.
+
+                  Devices are referenced by Proxmox PCI Resource Mapping name.
+                  This is intended for advanced/manual pinning; prefer PCIDeviceRequests for
+                  automated, race-free allocation.
+
+                  "All Functions" passthrough is always enabled by the controller.
+                items:
+                  description: |-
+                    PCIDeviceSpec defines a single Proxmox hostpci passthrough device\.
+
+                    Currently only PCIe mode is configurable; all-functions passthrough is enforced.
+                  properties:
+                    mapping:
+                      description: Mapping is the Proxmox PCI Resource Mapping name.
+                      minLength: 1
+                      type: string
+                    pcie:
+                      default: true
+                      description: PCIExpress enables PCIe mode for this device (pcie=1).
+                      type: boolean
+                  required:
+                  - mapping
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - mapping
+                x-kubernetes-list-type: map
               pool:
                 description: Pool Add the new VM to the specified pool.
                 type: string
@@ -931,6 +1053,41 @@ spec:
                   - macAddr
                   type: object
                 type: array
+              pciDeviceAllocations:
+                description: |-
+                  PCIDeviceAllocations records any allocated PCI devices (mapping IDs) for this machine.
+
+                  This is populated by the controller when PCIDeviceRequests are used.
+                items:
+                  description: PCIDeviceAllocation records an allocated PCI mapping
+                    for a request.
+                  properties:
+                    claimName:
+                      description: ClaimName is the ProxmoxPCIDeviceClaim used to
+                        allocate this mapping.
+                      type: string
+                    mapping:
+                      description: Mapping is the Proxmox PCI Resource Mapping name.
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name correlates this allocation to a request name.
+                      type: string
+                    pcie:
+                      default: true
+                      description: PCIExpress enables PCIe mode for this device (pcie=1).
+                      type: boolean
+                    proxmoxNode:
+                      description: ProxmoxNode is the Proxmox node on which the mapping
+                        resides.
+                      type: string
+                  required:
+                  - mapping
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - mapping
+                x-kubernetes-list-type: map
               proxmoxNode:
                 description: |-
                   ProxmoxNode is the name of the proxmox node, which was chosen for this

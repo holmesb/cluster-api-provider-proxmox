@@ -806,6 +806,32 @@ func TestReconcileVirtualMachineConfig_ApplyConfig(t *testing.T) {
 	require.EqualValues(t, task.UPID, *machineScope.ProxmoxMachine.Status.TaskRef)
 }
 
+func TestReconcileVirtualMachineConfig_PCIDevices(t *testing.T) {
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
+	machineScope.ProxmoxMachine.Spec.NumSockets = 2
+	machineScope.ProxmoxMachine.Spec.NumCores = 2
+	machineScope.ProxmoxMachine.Spec.MemoryMiB = 2048
+	machineScope.ProxmoxMachine.Spec.Description = ptr.To("test")
+	machineScope.ProxmoxMachine.Spec.PCIDevices = []infrav1alpha1.PCIDeviceSpec{{Mapping: "gpu0"}}
+
+	vm := newStoppedVM()
+	vm.VirtualMachineConfig.Sockets = 2
+	vm.VirtualMachineConfig.Cores = 2
+	vm.VirtualMachineConfig.Memory = 2048
+	vm.VirtualMachineConfig.Description = "test"
+	machineScope.SetVirtualMachine(vm)
+
+	expectedOptions := []interface{}{
+		proxmox.VirtualMachineOption{Name: "hostpci0", Value: "mapping=gpu0,pcie=1"},
+	}
+
+	proxmoxClient.EXPECT().ConfigureVM(context.Background(), vm, expectedOptions...).Return(newTask(), nil).Once()
+
+	requeue, err := reconcileVirtualMachineConfig(context.Background(), machineScope)
+	require.NoError(t, err)
+	require.True(t, requeue)
+}
+
 func TestReconcileVirtualMachineConfigTags(t *testing.T) {
 	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
 
