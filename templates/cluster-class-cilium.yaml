@@ -117,6 +117,13 @@ spec:
         namingStrategy:
           template: "{{ .cluster.name }}-loadbalancer-{{ .random }}"
   variables:
+    - name: nodesVlanId
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: integer
+          minimum: 1
+          maximum: 4094
     - name: workerAdditionalVolumes
       required: false
       schema:
@@ -1243,7 +1250,7 @@ spec:
               variable: cloneSpec.machineSpec.loadBalancer.format
   - name: ControlPlaneMem
     description: "Configure ControlPlane Memory"
-    enabledIf: "{{ if .cloneSpec.machineSpec.workerNode.memoryMiB }}true{{ end }}"
+    enabledIf: "{{ if .cloneSpec.machineSpec.controlPlane.memoryMiB }}true{{ end }}"
     definitions:
       - selector:
           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
@@ -1275,7 +1282,7 @@ spec:
               variable: cloneSpec.machineSpec.workerNode.memoryMiB
   - name: LoadBalancerMem
     description: "Configure LoadBalancer Memory"
-    enabledIf: "{{ if .cloneSpec.machineSpec.workerNode.memoryMiB }}true{{ end }}"
+    enabledIf: "{{ if .cloneSpec.machineSpec.loadBalancer.memoryMiB }}true{{ end }}"
     definitions:
       - selector:
           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
@@ -1339,6 +1346,31 @@ spec:
             path: /spec/template/spec/network
             valueFrom:
               variable: cloneSpec.machineSpec.loadBalancer.network
+  - name: set-nodes-vlan-controlplane
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/network/default/vlan
+            valueFrom:
+              variable: nodesVlanId
+  - name: set-nodes-vlan-workers
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            machineDeploymentClass:
+              names: ["proxmox-worker", "proxmox-worker-gpu", "proxmox-loadbalancer"]
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/network/default/vlan
+            valueFrom:
+              variable: nodesVlanId
 ---
 apiVersion: controlplane.cluster.x-k8s.io/v1beta1
 kind: KubeadmControlPlaneTemplate
