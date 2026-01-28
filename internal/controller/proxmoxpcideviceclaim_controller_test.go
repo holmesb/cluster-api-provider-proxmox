@@ -77,7 +77,7 @@ func TestLeaseNameForMappingID_IsDNS1123AndShortEnough(t *testing.T) {
 	}
 }
 
-func TestTryAcquireLease_IsAtomic(t *testing.T) {
+func TestTryAcquireLease_IsIdempotentAndExclusive(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := infrav1.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme(infrav1): %v", err)
@@ -110,13 +110,36 @@ func TestTryAcquireLease_IsAtomic(t *testing.T) {
 		t.Fatalf("expected first lease acquisition to succeed")
 	}
 
-	// Second attempt for same mapping ID must fail (AlreadyExists -> ok=false).
+	// Second attempt for same mapping ID by the same claim must succeed (idempotent).
 	ok2, leaseName2, err := r.tryAcquireLease(context.Background(), claim, "gpu_10de_1234_host04_01_00")
 	if err != nil {
 		t.Fatalf("tryAcquireLease 2: %v", err)
 	}
-	if ok2 {
-		t.Fatalf("expected second lease acquisition to fail")
+	if !ok2 {
+		t.Fatalf("expected second lease acquisition by same claim to succeed (idempotent)")
+	}
+	if leaseName2 != leaseName {
+		t.Fatalf("expected same lease name, got %q vs %q", leaseName2, leaseName)
+	}
+
+	// A different claim must not be able to acquire the same lease.
+	claim2 := &infrav1.ProxmoxPCIDeviceClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "c2",
+			Namespace: "default",
+			UID:       types.UID("uid-2"),
+		},
+		Spec: infrav1.ProxmoxPCIDeviceClaimSpec{ClusterName: "cluster"},
+	}
+	if err := c.Create(context.Background(), claim2); err != nil {
+		t.Fatalf("create claim2: %v", err)
+	}
+	ok3, _, err := r.tryAcquireLease(context.Background(), claim2, "gpu_10de_1234_host04_01_00")
+	if err != nil {
+		t.Fatalf("tryAcquireLease 3: %v", err)
+	}
+	if ok3 {
+		t.Fatalf("expected different claim to be unable to acquire an already-held lease")
 	}
 	if leaseName2 != leaseName {
 		t.Fatalf("expected same lease name, got %q vs %q", leaseName2, leaseName)

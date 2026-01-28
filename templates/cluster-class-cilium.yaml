@@ -124,6 +124,18 @@ spec:
           type: integer
           minimum: 1
           maximum: 4094
+    - name: podCidr
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: string
+          description: "Per-cluster Pod CIDR (e.g. 10.128.0.0/16)"
+    - name: serviceCidr
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: string
+          description: "Per-cluster Service CIDR (e.g. 10.144.0.0/18)"
     - name: workerAdditionalVolumes
       required: false
       schema:
@@ -734,6 +746,13 @@ spec:
           matchResources:
             controlPlane: true
         jsonPatches:
+          - op: add
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration
+            valueFrom:
+              template: |
+                networking:
+                  podSubnet: {{ .podCidr }}
+                  serviceSubnet: {{ .serviceCidr }}
           - op: add
             path: /spec/template/spec/kubeadmConfigSpec/users
             valueFrom:

@@ -127,20 +127,37 @@ func (r *ProxmoxPCIDeviceClaimReconciler) Reconcile(ctx context.Context, req ctr
 	// Stable ordering, so multiple contenders try leases in the same order.
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
 
+	// If a previous reconcile managed to create a lease but failed to persist status,
+	// we may already hold one of the candidate leases. Reuse it to avoid leaving
+	// "orphan" leases held by this claim.
 	var chosen *proxmox.PCIMapping
 	for i := range candidates {
 		m := &candidates[i]
-		ok, leaseName, leaseErr := r.tryAcquireLease(ctx, &claim, m.ID)
-		if leaseErr != nil {
-			claim.Status.Phase = infrav1.ProxmoxPCIDeviceClaimPhaseFailed
-			conditions.MarkFalse(&claim, conditionReady, "LeaseError", clusterv1.ConditionSeverityWarning, "%s", leaseErr.Error())
-			_ = r.Status().Update(ctx, &claim)
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, leaseErr
+		leaseName := leaseNameForMappingID(m.ID)
+		lease := &coordinationv1.Lease{}
+		if err := r.Get(ctx, client.ObjectKey{Name: leaseName, Namespace: claim.Namespace}, lease); err == nil {
+			if lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity == string(claim.UID) {
+				chosen = m
+				logger.Info("reusing lease already held by claim", "lease", leaseName, "mappingID", m.ID)
+				break
+			}
 		}
-		if ok {
-			chosen = m
-			logger.Info("acquired lease", "lease", leaseName, "mappingID", m.ID)
-			break
+	}
+	if chosen == nil {
+		for i := range candidates {
+			m := &candidates[i]
+			ok, leaseName, leaseErr := r.tryAcquireLease(ctx, &claim, m.ID)
+			if leaseErr != nil {
+				claim.Status.Phase = infrav1.ProxmoxPCIDeviceClaimPhaseFailed
+				conditions.MarkFalse(&claim, conditionReady, "LeaseError", clusterv1.ConditionSeverityWarning, "%s", leaseErr.Error())
+				_ = r.Status().Update(ctx, &claim)
+				return ctrl.Result{RequeueAfter: 15 * time.Second}, leaseErr
+			}
+			if ok {
+				chosen = m
+				logger.Info("acquired lease", "lease", leaseName, "mappingID", m.ID)
+				break
+			}
 		}
 	}
 
@@ -185,6 +202,21 @@ func (r *ProxmoxPCIDeviceClaimReconciler) reconcileDelete(ctx context.Context, c
 		}
 	}
 
+	// Also delete any other leases still held by this claim UID (e.g. from a previous
+	// reconcile that created a lease but failed to persist status).
+	var leaseList coordinationv1.LeaseList
+	if err := r.List(ctx, &leaseList, client.InNamespace(claim.Namespace)); err == nil {
+		for i := range leaseList.Items {
+			l := &leaseList.Items[i]
+			if !strings.HasPrefix(l.Name, leaseNamePrefix) {
+				continue
+			}
+			if l.Spec.HolderIdentity != nil && *l.Spec.HolderIdentity == string(claim.UID) {
+				_ = r.Delete(ctx, l)
+			}
+		}
+	}
+
 	claim.Status.Phase = infrav1.ProxmoxPCIDeviceClaimPhaseReleased
 	conditions.MarkFalse(claim, conditionReady, "Deleting", clusterv1.ConditionSeverityInfo, "claim is being deleted")
 	_ = r.Status().Update(ctx, claim)
@@ -200,20 +232,32 @@ func (r *ProxmoxPCIDeviceClaimReconciler) reconcileDelete(ctx context.Context, c
 func (r *ProxmoxPCIDeviceClaimReconciler) tryAcquireLease(ctx context.Context, claim *infrav1.ProxmoxPCIDeviceClaim, mappingID string) (bool, string, error) {
 	leaseName := leaseNameForMappingID(mappingID)
 
+	// Idempotent behaviour:
+	// - If the lease exists and is held by this claim, treat as acquired.
+	// - If it exists and is held by someone else, treat as unavailable.
+	// - If it doesn't exist, create it.
+	lease := &coordinationv1.Lease{}
+	if err := r.Get(ctx, client.ObjectKey{Name: leaseName, Namespace: claim.Namespace}, lease); err == nil {
+		if lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity == string(claim.UID) {
+			return true, leaseName, nil
+		}
+		return false, leaseName, nil
+	} else if err != nil && !apierrors.IsNotFound(err) {
+		return false, leaseName, err
+	}
+
 	now := metav1.NowMicro()
 	holder := string(claim.UID)
-	lease := &coordinationv1.Lease{
+	lease = &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      leaseName,
 			Namespace: claim.Namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion: infrav1.GroupVersion.String(),
-					Kind:       "ProxmoxPCIDeviceClaim",
-					Name:       claim.Name,
-					UID:        claim.UID,
-				},
-			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: infrav1.GroupVersion.String(),
+				Kind:       "ProxmoxPCIDeviceClaim",
+				Name:       claim.Name,
+				UID:        claim.UID,
+			}},
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       &holder,
@@ -225,6 +269,7 @@ func (r *ProxmoxPCIDeviceClaimReconciler) tryAcquireLease(ctx context.Context, c
 
 	if err := r.Create(ctx, lease); err != nil {
 		if apierrors.IsAlreadyExists(err) {
+			// Someone else won the race.
 			return false, leaseName, nil
 		}
 		return false, leaseName, err
