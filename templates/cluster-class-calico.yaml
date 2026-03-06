@@ -117,6 +117,21 @@ spec:
         namingStrategy:
            template: "{{ .cluster.name }}-loadbalancer-{{ .random }}"
   variables:
+    - name: apiServerExtraArgs
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: "Map of kube-apiserver flags (kubeadm apiServer.extraArgs). Values should be strings."
+          additionalProperties:
+            type: string
+          example:
+            oidc-issuer-url: "https://idm.example.com/..."
+            oidc-client-id: "k8s-test-kubectl"
+            oidc-username-claim: "sub"
+            oidc-groups-claim: "groups"
+            oidc-username-prefix: "oidc:"
+            oidc-groups-prefix: "oidc:"
     - name: nodesVlanId
       required: true
       schema:
@@ -124,6 +139,18 @@ spec:
           type: integer
           minimum: 1
           maximum: 4094
+    - name: podCidr
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: string
+          description: "Per-cluster Pod CIDR (e.g. 10.128.0.0/16)"
+    - name: serviceCidr
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: string
+          description: "Per-cluster Service CIDR (e.g. 10.144.0.0/18)"
     - name: workerAdditionalVolumes
       required: false
       schema:
@@ -735,6 +762,15 @@ spec:
             controlPlane: true
         jsonPatches:
           - op: add
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration
+            valueFrom:
+              template: |
+                networking:
+                  podSubnet: {{ .podCidr }}
+                  serviceSubnet: {{ .serviceCidr }}
+                apiServer:
+                  extraArgs: {}
+          - op: add
             path: /spec/template/spec/kubeadmConfigSpec/users
             valueFrom:
               template: |
@@ -798,6 +834,20 @@ spec:
                         path: /etc/kubernetes/admin.conf
                         type: FileOrCreate
                       name: kubeconfig
+  - name: apiserver-extraargs
+    description: "Set kubeadm clusterConfiguration.apiServer.extraArgs from a variable map"
+    enabledIf: "{{ if .apiServerExtraArgs }}true{{ end }}"
+    definitions:
+      - selector:
+          apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+          kind: KubeadmControlPlaneTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: replace
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs
+            valueFrom:
+              variable: apiServerExtraArgs
   - name: ApplyLocalStorageFlag-ControlPlane
     definitions:
       - selector:
@@ -1102,7 +1152,7 @@ spec:
                   sshAuthorizedKeys: {{ .cloneSpec.sshAuthorizedKeys }}
   - name: ControlPlaneNodeSockets
     description: "Configure Control Plane Sockets"
-    enabledIf: "{{ if .cloneSpec.machineSpecs.controlPlane.numSockets }}true{{ end }}"
+    enabledIf: "{{ if .cloneSpec.machineSpec.controlPlane.numSockets }}true{{ end }}"
     definitions:
       - selector:
           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
@@ -1116,7 +1166,7 @@ spec:
               variable: cloneSpec.machineSpec.controlPlane.numSockets
   - name: WorkerNodeSockets
     description: "Configure Worker Node Sockets"
-    enabledIf: "{{ if .cloneSpec.machineSpecs.workerNode.numSockets }}true{{ end }}"
+    enabledIf: "{{ if .cloneSpec.machineSpec.workerNode.numSockets }}true{{ end }}"
     definitions:
       - selector:
           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
@@ -1134,7 +1184,7 @@ spec:
               variable: cloneSpec.machineSpec.workerNode.numSockets
   - name: LoadBalancerSockets
     description: "Configure LoadBalancerNode Sockets"
-    enabledIf: "{{ if .cloneSpec.machineSpecs.loadBalancer.numSockets }}true{{ end }}"
+    enabledIf: "{{ if .cloneSpec.machineSpec.loadBalancer.numSockets }}true{{ end }}"
     definitions:
       - selector:
           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
