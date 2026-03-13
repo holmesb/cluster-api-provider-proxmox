@@ -117,6 +117,35 @@ spec:
         namingStrategy:
           template: "{{ .cluster.name }}-loadbalancer-{{ .random }}"
   variables:
+    - name: controllerManagerExtraArgs
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            bind-address: "0.0.0.0"
+    - name: schedulerExtraArgs
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: "Map of kube-scheduler flags (kubeadm scheduler.extraArgs). Values should be strings."
+          additionalProperties:
+            type: string
+          example:
+            bind-address: "0.0.0.0"
+    - name: etcdLocalExtraArgs
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: "Map of local etcd flags (kubeadm etcd.local.extraArgs). Values should be strings."
+          additionalProperties:
+            type: string
+          example:
+            listen-metrics-urls: "http://0.0.0.0:2381"
     - name: apiServerExtraArgs
       required: false
       schema:
@@ -848,6 +877,56 @@ spec:
             path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs
             valueFrom:
               variable: apiServerExtraArgs
+  - name: controllermanager-extraargs
+    enabledIf: '{{ if .controllerManagerExtraArgs }}true{{ end }}'
+    definitions:
+      - selector:
+          apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+          kind: KubeadmControlPlaneTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/controllerManager
+            value: {}
+          - op: add
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/controllerManager/extraArgs
+            valueFrom:
+              variable: controllerManagerExtraArgs
+  - name: scheduler-extraargs
+    description: "Optionally set kube-scheduler extraArgs via variable."
+    enabledIf: "{{ if .schedulerExtraArgs }}true{{ end }}"
+    definitions:
+      - selector:
+          apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+          kind: KubeadmControlPlaneTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/scheduler
+            value: {}
+          - op: add
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/scheduler/extraArgs
+            valueFrom:
+              variable: schedulerExtraArgs
+  - name: etcdlocal-extra-args
+    description: "Optionally set local etcd extraArgs via variable."
+    enabledIf: "{{ if .etcdLocalExtraArgs }}true{{ end }}"
+    definitions:
+      - selector:
+          apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+          kind: KubeadmControlPlaneTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd/local
+            value: {}
+          - op: add
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd/local/extraArgs
+            valueFrom:
+              variable: etcdLocalExtraArgs
   - name: ApplyLocalStorageFlag-ControlPlane
     definitions:
       - selector:
