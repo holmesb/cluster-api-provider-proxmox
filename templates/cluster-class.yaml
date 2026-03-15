@@ -126,16 +126,23 @@ spec:
             type: string
           example:
             bind-address: "0.0.0.0"
-    - name: etcdLocalExtraArgs
+    - name: etcdLocal
       required: false
       schema:
         openAPIV3Schema:
           type: object
-          description: "Map of local etcd flags (kubeadm etcd.local.extraArgs). Values should be strings."
+          properties:
+            local:
+              type: object
+              example:
+                local:
+                  extraArgs:
+                    listen-metrics-urls: "http://127.0.0.1:2381,http://0.0.0.0:2381"
+              properties:
+                extraArgs:
+                  type: object
           additionalProperties:
             type: string
-          example:
-            listen-metrics-urls: "http://0.0.0.0:2381"
     - name: apiServerExtraArgs
       required: false
       schema:
@@ -883,6 +890,20 @@ spec:
             path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/controllerManager/extraArgs
             valueFrom:
               variable: controllerManagerExtraArgs
+  - name: etcdlocal-extra-args
+    description: "Optionally set local etcd extraArgs via variable."
+    enabledIf: "{{ if .etcdLocal }}true{{ end }}"
+    definitions:
+      - selector:
+          apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+          kind: KubeadmControlPlaneTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd
+            valueFrom:
+              variable: etcdLocal
   - name: scheduler-extraargs
     description: "Optionally set kube-scheduler extraArgs via variable."
     enabledIf: "{{ if .schedulerExtraArgs }}true{{ end }}"
@@ -900,23 +921,6 @@ spec:
             path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/scheduler/extraArgs
             valueFrom:
               variable: schedulerExtraArgs
-  - name: etcdlocal-extra-args
-    description: "Optionally set local etcd extraArgs via variable."
-    enabledIf: "{{ if .etcdLocalExtraArgs }}true{{ end }}"
-    definitions:
-      - selector:
-          apiVersion: controlplane.cluster.x-k8s.io/v1beta1
-          kind: KubeadmControlPlaneTemplate
-          matchResources:
-            controlPlane: true
-        jsonPatches:
-          - op: add
-            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd/local
-            value: {}
-          - op: add
-            path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd/local/extraArgs
-            valueFrom:
-              variable: etcdLocalExtraArgs
   - name: ApplyLocalStorageFlag-ControlPlane
     definitions:
       - selector:
