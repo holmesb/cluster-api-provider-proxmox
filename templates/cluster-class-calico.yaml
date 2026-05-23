@@ -115,7 +115,7 @@ spec:
               status: "False"
               timeout: 300s
         namingStrategy:
-           template: "{{ .cluster.name }}-loadbalancer-{{ .random }}"
+          template: "{{ .cluster.name }}-loadbalancer-{{ .random }}"
   variables:
     - name: controllerManagerExtraArgs
       required: false
@@ -151,8 +151,8 @@ spec:
               properties:
                 extraArgs:
                   type: object
-          additionalProperties:
-            type: string
+                  additionalProperties:
+                    type: string
     - name: apiServerExtraArgs
       required: false
       schema:
@@ -339,6 +339,11 @@ spec:
             mode:
               type: string
               enum: ["ipvs","iptables"]
+            nodePortAddresses:
+              type: array
+              items:
+                type: string
+              default: [ "primary" ]
     - name: templateSelector
       required: false
       schema:
@@ -392,14 +397,14 @@ spec:
                           properties:
                             disk:
                               type: string
-                        sizeGb:
-                          type: integer
+                            sizeGb:
+                              type: integer
                               format: int32
-                          minimum: 5
+                              minimum: 5
                           required: [disk, sizeGb]
-                    format:
-                      type: string
-                      enum: [raw, qcow2, vmdk]
+                        format:
+                          type: string
+                          enum: [raw, qcow2, vmdk]
                     network:
                       type: object
                       properties:
@@ -1183,12 +1188,21 @@ spec:
             valueFrom:
               template: |
                 content: |
-                  #/bin/sh
+                  #!/bin/sh
                   cat >> /run/kubeadm/kubeadm.yaml <<EOF
                   ---
                   apiVersion: kubeproxy.config.k8s.io/v1alpha1
                   kind: KubeProxyConfiguration
-                  mode: "ipvs"
+                  mode: "{{ .kubeProxy.mode }}"
+                  nodePortAddresses:
+                  {{- if .kubeProxy.nodePortAddresses }}
+                  {{- range .kubeProxy.nodePortAddresses }}
+                  - {{ . }}
+                  {{- end }}
+                  {{- else }}
+                  - primary
+                  {{- end }}
+                  {{- if eq .kubeProxy.mode "ipvs" }}
                   ipvs:
                     strictARP: true
                   EOF

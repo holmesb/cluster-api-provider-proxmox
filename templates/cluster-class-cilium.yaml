@@ -339,6 +339,11 @@ spec:
             mode:
               type: string
               enum: ["ipvs","iptables"]
+            nodePortAddresses:
+              type: array
+              items:
+                type: string
+              default: [ "primary" ]
     - name: templateSelector
       required: false
       schema:
@@ -1183,12 +1188,21 @@ spec:
             valueFrom:
               template: |
                 content: |
-                  #/bin/sh
+                  #!/bin/sh
                   cat >> /run/kubeadm/kubeadm.yaml <<EOF
                   ---
                   apiVersion: kubeproxy.config.k8s.io/v1alpha1
                   kind: KubeProxyConfiguration
-                  mode: "ipvs"
+                  mode: "{{ .kubeProxy.mode }}"
+                  nodePortAddresses:
+                  {{- if .kubeProxy.nodePortAddresses }}
+                  {{- range .kubeProxy.nodePortAddresses }}
+                  - {{ . }}
+                  {{- end }}
+                  {{- else }}
+                  - primary
+                  {{- end }}
+                  {{- if eq .kubeProxy.mode "ipvs" }}
                   ipvs:
                     strictARP: true
                   EOF
