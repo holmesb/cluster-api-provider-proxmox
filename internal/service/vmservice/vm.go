@@ -19,7 +19,10 @@ package vmservice
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -138,6 +141,91 @@ func proxmoxMachineHasVMProvisionFailedReason(scope *scope.MachineScope) bool {
 	reason := conditions.GetReason(scope.ProxmoxMachine, infrav1.ProxmoxMachineVirtualMachineProvisionedCondition)
 	return reason == infrav1.ProxmoxMachineVirtualMachineProvisionedVMProvisionFailedReason ||
 		reason == infrav1.ProxmoxMachineVirtualMachineProvisionedTaskFailedReason
+}
+
+func hostPCISlotValue(cfg any, index int) string {
+	if cfg == nil || index < 0 {
+		return ""
+	}
+	cfgValue := reflect.ValueOf(cfg)
+	if cfgValue.Kind() == reflect.Pointer {
+		cfgValue = cfgValue.Elem()
+	}
+	if !cfgValue.IsValid() {
+		return ""
+	}
+	// Field names depend on the Proxmox client struct. Try the common variants.
+	candidates := []string{
+		fmt.Sprintf("Hostpci%d", index),
+		fmt.Sprintf("HostPCI%d", index),
+	}
+	for _, fieldName := range candidates {
+		fieldValue := cfgValue.FieldByName(fieldName)
+		if !fieldValue.IsValid() || fieldValue.Kind() != reflect.String {
+			continue
+		}
+		return strings.TrimSpace(fieldValue.String())
+	}
+	return ""
+}
+
+func desiredHostPCISpecOptions(pciDevices []infrav1.PCIDeviceSpec) []proxmox.VirtualMachineOption {
+	if len(pciDevices) == 0 {
+		return nil
+	}
+
+	// Keep hostpciN assignment deterministic even if the list order changes.
+	devices := slices.Clone(pciDevices)
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Mapping < devices[j].Mapping })
+
+	opts := make([]proxmox.VirtualMachineOption, 0, len(devices))
+	for i, dev := range devices {
+		pcie := ptr.Deref(dev.PCIExpress, true)
+		value := fmt.Sprintf("mapping=%s,pcie=%d", dev.Mapping, boolToInt(pcie))
+		opts = append(opts, proxmox.VirtualMachineOption{Name: fmt.Sprintf("hostpci%d", i), Value: value})
+	}
+	return opts
+}
+
+func desiredHostPCIDevices(scope *scope.MachineScope) []infrav1.PCIDeviceSpec {
+	pm := scope.ProxmoxMachine
+	merged := make([]infrav1.PCIDeviceSpec, 0)
+	seen := map[string]struct{}{}
+
+	// Prefer allocations from claims first.
+	for _, allocation := range pm.Status.PCIDeviceAllocations {
+		mapping := strings.TrimSpace(allocation.Mapping)
+		if mapping == "" {
+			continue
+		}
+		if _, ok := seen[mapping]; ok {
+			continue
+		}
+		seen[mapping] = struct{}{}
+		merged = append(merged, infrav1.PCIDeviceSpec{Mapping: mapping, PCIExpress: allocation.PCIExpress})
+	}
+
+	// Then include any explicitly pinned devices.
+	for _, device := range pm.Spec.PCIDevices {
+		mapping := strings.TrimSpace(device.Mapping)
+		if mapping == "" {
+			continue
+		}
+		if _, ok := seen[mapping]; ok {
+			continue
+		}
+		seen[mapping] = struct{}{}
+		merged = append(merged, device)
+	}
+
+	return merged
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func checkCloudInitStatus(ctx context.Context, machineScope *scope.MachineScope) (requeue bool, err error) {
@@ -343,6 +431,18 @@ func reconcileVirtualMachineConfig(ctx context.Context, machineScope *scope.Mach
 		}
 		if len(machineScope.VirtualMachine.VirtualMachineConfig.TagsSlice) > length {
 			vmOptions = append(vmOptions, proxmox.VirtualMachineOption{Name: optionTags, Value: strings.Join(machineScope.VirtualMachine.VirtualMachineConfig.TagsSlice, ";")})
+		}
+	}
+
+	// PCI devices (hostpciN).
+	if desired := desiredHostPCISpecOptions(desiredHostPCIDevices(machineScope)); len(desired) > 0 {
+		for _, opt := range desired {
+			idx := -1
+			_, _ = fmt.Sscanf(strings.TrimPrefix(opt.Name, "hostpci"), "%d", &idx)
+			current := hostPCISlotValue(vmConfig, idx)
+			if current != opt.Value {
+				vmOptions = append(vmOptions, opt)
+			}
 		}
 	}
 
