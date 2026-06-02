@@ -1,0 +1,12 @@
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/disks/properties/bootVolume/deprecated
+  value: true
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/disks/properties/additionalVolumes/deprecated
+  value: true
+- op: replace
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/disks/properties/bootVolume/description
+  value: "Deprecated: will be replaced by .spec.disks.volumes[*] with a single boot:true item."
+- op: replace
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/disks/properties/additionalVolumes/description
+  value: "Deprecated: prefer .spec.disks.volumes[*] (zero/one/infinity)."

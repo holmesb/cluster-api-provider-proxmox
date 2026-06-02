@@ -139,6 +139,100 @@ type ProxmoxMachineSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:items:Pattern=`^(?i)[a-z0-9_][a-z0-9_\-\+\.]*$`
 	Tags []string `json:"tags,omitempty"`
+
+	// pciDeviceRequests is the desired PCI passthrough device request list.
+	//
+	// Each request is matched against Proxmox PCI Resource Mappings by selector
+	// over key=value pairs encoded in the mapping description/comment. Allocation
+	// is performed via ProxmoxPCIDeviceClaim plus Lease locking.
+	//
+	// The controller records selected mappings in status.pciDeviceAllocations.
+	//
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	PCIDeviceRequests []PCIDeviceRequest `json:"pciDeviceRequests,omitempty"`
+
+	// pciDevices is a list of PCI devices to pass through to the VM.
+	//
+	// Devices are referenced by Proxmox PCI Resource Mapping name. This is
+	// intended for advanced/manual pinning; prefer PCIDeviceRequests for
+	// automated, race-free allocation.
+	//
+	// All-functions passthrough is enforced by the controller.
+	//
+	// +optional
+	// +listType=map
+	// +listMapKey=mapping
+	PCIDevices []PCIDeviceSpec `json:"pciDevices,omitempty"`
+}
+
+// PCIDeviceRequest defines a logical PCI passthrough request.
+//
+// The selector matches against key=value pairs encoded in the Proxmox mapping
+// comment, separated with semicolons, for example: class=gpu;model_key=10de:1234.
+//
+// The name is used to correlate requests with allocations.
+// +kubebuilder:validation:XValidation:rule="!has(self.count) || self.count >= 1",message="count must be >= 1"
+type PCIDeviceRequest struct {
+	// name is a stable identifier for this request, for example "gpu".
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Name string `json:"name,omitempty"`
+
+	// selector matches eligible Proxmox PCI Resource Mappings.
+	// +required
+	Selector metav1.LabelSelector `json:"selector,omitempty"`
+
+	// count is the number of devices to allocate for this request.
+	// +kubebuilder:default=1
+	// +optional
+	Count *int32 `json:"count,omitempty"`
+
+	// pciExpress enables PCIe mode for allocated devices.
+	// +kubebuilder:default=true
+	// +optional
+	PCIExpress *bool `json:"pcie,omitempty"`
+}
+
+// PCIDeviceAllocation records an allocated PCI mapping for a request.
+type PCIDeviceAllocation struct {
+	// name correlates this allocation to a request name.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// claimName is the ProxmoxPCIDeviceClaim used to allocate this mapping.
+	// +optional
+	ClaimName string `json:"claimName,omitempty"`
+
+	// mapping is the Proxmox PCI Resource Mapping name.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Mapping string `json:"mapping,omitempty"`
+
+	// proxmoxNode is the Proxmox node on which the mapping resides.
+	// +optional
+	ProxmoxNode string `json:"proxmoxNode,omitempty"`
+
+	// pciExpress enables PCIe mode for this device.
+	// +kubebuilder:default=true
+	// +optional
+	PCIExpress *bool `json:"pcie,omitempty"`
+}
+
+// PCIDeviceSpec defines a single Proxmox hostpci passthrough device.
+//
+// Currently only PCIe mode is configurable; all-functions passthrough is enforced.
+type PCIDeviceSpec struct {
+	// mapping is the Proxmox PCI Resource Mapping name.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Mapping string `json:"mapping,omitempty"`
+
+	// pciExpress enables PCIe mode for this device.
+	// +kubebuilder:default=true
+	// +optional
+	PCIExpress *bool `json:"pcie,omitempty"`
 }
 
 // Storage is the physical storage on the node.
@@ -150,29 +244,60 @@ type Storage struct {
 	// +optional
 	BootVolume *DiskSize `json:"bootVolume,omitempty,omitzero"`
 
-	// TODO Intended to add handling for additional volumes,
-	// which will be added to the node.
-	// e.g. AdditionalVolumes []DiskSize.
+	// additionalVolumes defines additional volumes to be added to the virtual machine.
+	// +optional
+	// +listType=map
+	// +listMapKey=disk
+	AdditionalVolumes []DiskSpec `json:"additionalVolumes,omitempty"`
 }
 
-// DiskSize is contains values for the disk device and size.
+// DiskSize contains values for the disk device and size.
+//
+// The additional optional fields allow per-volume storage placement and Proxmox
+// disk options. They are used by BootVolume and by additional volumes.
 type DiskSize struct {
-	// disk is the name of the disk device that should be resized.
-	// Example values are: ide[0-3], scsi[0-30], sata[0-5].
+	// disk is the name of the disk device that should be resized or created.
+	// Example values are: ide[0-3], scsi[0-30], sata[0-5], virtio[0-15].
 	// +kubebuilder:validation:MinLength=1
 	// +required
 	Disk string `json:"disk,omitempty"`
 
 	// sizeGb defines the size in gigabytes.
 	//
-	// As Proxmox does not support shrinking, the size
-	// must be bigger than the already configured size in the
-	// template.
+	// As Proxmox does not support shrinking, the size must be bigger than the
+	// already configured size in the template when resizing an existing disk.
 	//
 	// +kubebuilder:validation:Minimum=5
 	// +required
 	SizeGB int32 `json:"sizeGb,omitempty"`
+
+	// storage is an optional per-volume Proxmox storage name, for example
+	// "local-lvm" or "nfs-data". If omitted, the controller falls back to
+	// the machine clone storage when present, otherwise to the node default.
+	// +optional
+	Storage *string `json:"storage,omitempty"`
+
+	// format is the target storage format for this volume.
+	// +kubebuilder:validation:Enum=raw;qcow2;vmdk
+	// +optional
+	Format *TargetFileStorageFormat `json:"format,omitempty"`
+
+	// discard enables TRIM/UNMAP support for this virtual disk.
+	// +optional
+	Discard *bool `json:"discard,omitempty"`
+
+	// ioThread enables the Proxmox IO Thread option for this virtual disk.
+	// +optional
+	IOThread *bool `json:"ioThread,omitempty"`
+
+	// ssd enables SSD emulation for this virtual disk.
+	// +optional
+	SSD *bool `json:"ssd,omitempty"`
 }
+
+// DiskSpec is kept for the fork's additional-volume implementation while
+// preserving upstream DiskSize compatibility.
+type DiskSpec = DiskSize
 
 // TargetFileStorageFormat the target format of the cloned disk.
 type TargetFileStorageFormat string
@@ -475,6 +600,35 @@ type NetworkDevice struct {
 // MTU is the network device Maximum Transmission Unit. MTUs below 1280 break IPv6.
 type MTU *int32
 
+// StorageSelectionStatus records the result of automatic storage selection for a
+// single ProxmoxMachine. Once boot and additional storage pools have been chosen
+// for this machine, they are persisted here and reused across reconciles until
+// the disks spec changes.
+type StorageSelectionStatus struct {
+	// node is the Proxmox node name on which this machine was scheduled when the
+	// storage decision was made.
+	// +optional
+	Node string `json:"node,omitempty"`
+
+	// bootStorage is the name of the storage pool selected for the boot/clone
+	// volume when automatic storage selection is used.
+	// +optional
+	BootStorage string `json:"bootStorage,omitempty"`
+
+	// additionalStorage is the name of the storage pool selected for automatically
+	// placed additional volumes when no per-volume or machine-level storage
+	// overrides are set.
+	// +optional
+	AdditionalStorage string `json:"additionalStorage,omitempty"`
+
+	// disksHash is an opaque hash of the disks-related portion of the
+	// ProxmoxMachine spec that was used when this storage selection was computed.
+	// If the current spec hash differs, the controller should recompute storage
+	// selection and update this status.
+	// +optional
+	DisksHash string `json:"disksHash,omitempty"`
+}
+
 // ProxmoxMachineStatus defines the observed state of a ProxmoxMachine.
 type ProxmoxMachineStatus struct {
 	// conditions defines current service state of the ProxmoxMachine.
@@ -514,10 +668,23 @@ type ProxmoxMachineStatus struct {
 	// +listType=atomic
 	Network []NetworkStatus `json:"network,omitempty"`
 
+	// storageSelection records automatically derived storage selections for this
+	// machine so decisions are stable across reconciles. When the disks spec
+	// changes, the controller may recompute this selection.
+	// +optional
+	StorageSelection *StorageSelectionStatus `json:"storageSelection,omitempty"`
+
 	// proxmoxNode is the name of the proxmox node, which was chosen for this
 	// machine to be deployed on.
 	// +optional
 	ProxmoxNode *string `json:"proxmoxNode,omitempty"`
+
+	// pciDeviceAllocations records allocated PCI devices for this machine.
+	// This is populated by the controller when PCIDeviceRequests are used.
+	// +optional
+	// +listType=map
+	// +listMapKey=mapping
+	PCIDeviceAllocations []PCIDeviceAllocation `json:"pciDeviceAllocations,omitempty"`
 
 	// taskRef is a managed object reference to a Task related to the ProxmoxMachine.
 	// This value is set automatically at runtime and should not be set or
