@@ -19,6 +19,9 @@ package vmservice
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -226,6 +229,43 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+// diskSlotOccupied reports whether a VM disk slot, for example "scsi1", is already set in the VM config.
+func diskSlotOccupied(cfg any, slot string) bool {
+	if cfg == nil || slot == "" {
+		return false
+	}
+
+	slot = strings.TrimSpace(strings.ToLower(slot))
+	var fieldName string
+	switch {
+	case strings.HasPrefix(slot, "scsi"):
+		fieldName = "SCSI" + slot[4:]
+	case strings.HasPrefix(slot, "sata"):
+		fieldName = "SATA" + slot[4:]
+	case strings.HasPrefix(slot, "ide"):
+		fieldName = "IDE" + slot[3:]
+	case strings.HasPrefix(slot, "virtio"):
+		fieldName = "VirtIO" + slot[6:]
+	default:
+		// Unknown bus: assume occupied to avoid creating junk config keys.
+		return true
+	}
+
+	cfgValue := reflect.ValueOf(cfg)
+	if cfgValue.Kind() == reflect.Pointer {
+		cfgValue = cfgValue.Elem()
+	}
+	if !cfgValue.IsValid() {
+		return false
+	}
+
+	fieldValue := cfgValue.FieldByName(fieldName)
+	if !fieldValue.IsValid() || fieldValue.Kind() != reflect.String {
+		return false
+	}
+	return strings.TrimSpace(fieldValue.String()) != ""
 }
 
 func checkCloudInitStatus(ctx context.Context, machineScope *scope.MachineScope) (requeue bool, err error) {
@@ -446,6 +486,10 @@ func reconcileVirtualMachineConfig(ctx context.Context, machineScope *scope.Mach
 		}
 	}
 
+	if err := reconcileAdditionalVolumes(ctx, machineScope, vmConfig, &vmOptions); err != nil {
+		return false, err
+	}
+
 	if len(vmOptions) == 0 {
 		return false, nil
 	}
@@ -465,6 +509,136 @@ func reconcileVirtualMachineConfig(ctx context.Context, machineScope *scope.Mach
 		Reason: infrav1.ProxmoxMachineVirtualMachineProvisionedWaitingForDiskReconciliationReason,
 	})
 	return true, nil
+}
+
+func reconcileAdditionalVolumes(ctx context.Context, machineScope *scope.MachineScope, vmConfig any, vmOptions *[]proxmox.VirtualMachineOption) error {
+	disksSpec := machineScope.ProxmoxMachine.Spec.Disks
+	if disksSpec == nil || len(disksSpec.AdditionalVolumes) == 0 {
+		return nil
+	}
+
+	findMatchingUnusedVolume := func(cfg any, storageName string) string {
+		if cfg == nil || storageName == "" {
+			return ""
+		}
+
+		cfgValue := reflect.ValueOf(cfg)
+		if cfgValue.Kind() == reflect.Pointer {
+			cfgValue = cfgValue.Elem()
+		}
+		if !cfgValue.IsValid() {
+			return ""
+		}
+
+		cfgType := cfgValue.Type()
+		for i := 0; i < cfgType.NumField(); i++ {
+			fieldMetadata := cfgType.Field(i)
+			if !strings.HasPrefix(fieldMetadata.Name, "Unused") {
+				continue
+			}
+
+			fieldValue := cfgValue.Field(i)
+			if !fieldValue.IsValid() || fieldValue.Kind() != reflect.String {
+				continue
+			}
+
+			volID := strings.TrimSpace(fieldValue.String())
+			if volID != "" && strings.HasPrefix(volID, storageName+":") {
+				return volID
+			}
+		}
+		return ""
+	}
+
+	pendingInReconcile := map[string]struct{}{}
+
+	var (
+		defaultAdditionalStorage string
+		defaultStoragesResolved  bool
+	)
+
+	var nodeName string
+	if machineScope.ProxmoxMachine.Status.ProxmoxNode != nil {
+		nodeName = strings.TrimSpace(*machineScope.ProxmoxMachine.Status.ProxmoxNode)
+	}
+
+	for _, vol := range disksSpec.AdditionalVolumes {
+		slotName := strings.ToLower(strings.TrimSpace(vol.Disk))
+		if slotName == "" {
+			return errors.New("additional volume disk slot must not be empty")
+		}
+
+		alreadySet := diskSlotOccupied(vmConfig, slotName)
+		machineScope.V(4).Info("additionalVolume: slot state", "machine", machineScope.Name(), "slot", slotName, "occupied", alreadySet)
+		if alreadySet {
+			if pendingGuardEnabled {
+				clearPending(machineScope, slotName)
+			}
+			continue
+		}
+
+		if pendingGuardEnabled && isPending(machineScope, slotName) {
+			machineScope.V(4).Info("additionalVolume: skip, pending add in effect", "machine", machineScope.Name(), "slot", slotName)
+			continue
+		}
+
+		if _, seen := pendingInReconcile[slotName]; seen {
+			machineScope.V(4).Info("additionalVolume: skip, add already queued in this reconcile", "machine", machineScope.Name(), "slot", slotName)
+			continue
+		}
+
+		var storageName string
+		if vol.Storage != nil && *vol.Storage != "" {
+			storageName = *vol.Storage
+		} else if machineScope.ProxmoxMachine.Spec.Storage != nil && *machineScope.ProxmoxMachine.Spec.Storage != "" {
+			storageName = *machineScope.ProxmoxMachine.Spec.Storage
+		} else {
+			if !defaultStoragesResolved {
+				if nodeName == "" {
+					return errors.New("unable to auto-select storage for additionalVolumes: Proxmox node is unknown")
+				}
+
+				var err error
+				_, defaultAdditionalStorage, err = ensureStorageSelection(ctx, machineScope, nodeName)
+				if err != nil {
+					return err
+				}
+				defaultStoragesResolved = true
+			}
+
+			storageName = defaultAdditionalStorage
+		}
+
+		machineScope.V(4).Info("additionalVolume: resolved storage", "machine", machineScope.Name(), "slot", slotName, "storage", storageName)
+		volumeValue := findMatchingUnusedVolume(vmConfig, storageName)
+		if volumeValue != "" {
+			machineScope.V(4).Info("additionalVolume: reattaching existing unused volume", "machine", machineScope.Name(), "slot", slotName, "volumeID", volumeValue)
+		} else if vol.Format != nil && *vol.Format != "" {
+			volumeValue = fmt.Sprintf("%s:0,size=%dG,format=%s", storageName, vol.SizeGB, string(*vol.Format))
+			machineScope.Info("additionalVolume: creating file-backed volume", "machine", machineScope.Name(), "slot", slotName, "value", volumeValue)
+		} else {
+			volumeValue = fmt.Sprintf("%s:%d", storageName, vol.SizeGB)
+			machineScope.Info("additionalVolume: creating block-backed volume", "machine", machineScope.Name(), "slot", slotName, "value", volumeValue)
+		}
+
+		if vol.Discard != nil && *vol.Discard {
+			volumeValue = fmt.Sprintf("%s,discard=on", volumeValue)
+		}
+		if vol.IOThread != nil && *vol.IOThread {
+			volumeValue = fmt.Sprintf("%s,iothread=1", volumeValue)
+		}
+		if vol.SSD != nil && *vol.SSD {
+			volumeValue = fmt.Sprintf("%s,ssd=1", volumeValue)
+		}
+
+		*vmOptions = append(*vmOptions, proxmox.VirtualMachineOption{Name: vol.Disk, Value: volumeValue})
+		pendingInReconcile[slotName] = struct{}{}
+		if pendingGuardEnabled {
+			markPending(machineScope, slotName)
+		}
+	}
+
+	return nil
 }
 
 func reconcileMachineAddresses(machineScope *scope.MachineScope) error {
@@ -523,6 +697,239 @@ func getClusterAPIMachineAddresses(scope *scope.MachineScope) ([]clusterv1.Machi
 	}
 
 	return addresses, nil
+}
+
+func disksSpecHash(disks any) string {
+	if disks == nil {
+		return ""
+	}
+
+	b, err := json.Marshal(disks)
+	if err != nil {
+		return ""
+	}
+
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// ensureStorageSelection returns the boot and additional storage pools for the
+// given machine and node. If a prior selection exists in status and still
+// matches the current node and disks spec, it is reused. Otherwise a new
+// selection is computed and persisted in status.
+func ensureStorageSelection(ctx context.Context, machineScope *scope.MachineScope, nodeName string) (bootStorage, additionalStorage string, err error) {
+	if nodeName == "" {
+		return "", "", errors.New("node name is required to ensure storage selection")
+	}
+
+	pm := machineScope.ProxmoxMachine
+	disksHash := disksSpecHash(pm.Spec.Disks)
+
+	if pm.Status.StorageSelection != nil {
+		selection := pm.Status.StorageSelection
+		if selection.Node == nodeName && selection.DisksHash == disksHash && selection.BootStorage != "" && selection.AdditionalStorage != "" {
+			machineScope.Info("using persisted storage selection", "node", nodeName, "bootStorage", selection.BootStorage, "additionalStorage", selection.AdditionalStorage)
+			return selection.BootStorage, selection.AdditionalStorage, nil
+		}
+	}
+
+	bootStorage, additionalStorage, err = selectNodeStorages(ctx, machineScope, nodeName)
+	if err != nil {
+		return "", "", err
+	}
+
+	pm.Status.StorageSelection = &infrav1.StorageSelectionStatus{
+		Node:              nodeName,
+		BootStorage:       bootStorage,
+		AdditionalStorage: additionalStorage,
+		DisksHash:         disksHash,
+	}
+
+	machineScope.Info("computed and stored storage selection", "node", nodeName, "bootStorage", bootStorage, "additionalStorage", additionalStorage)
+	return bootStorage, additionalStorage, nil
+}
+
+func reservedAdditionalCapacityByPool(ctx context.Context, machineScope *scope.MachineScope, nodeName string) (map[string]uint64, error) {
+	reserved := make(map[string]uint64)
+	reservedCount := make(map[string]int)
+
+	if nodeName == "" {
+		return reserved, nil
+	}
+
+	pmList, err := machineScope.InfraCluster.ListProxmoxMachinesForCluster(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot list ProxmoxMachines for reserved capacity")
+	}
+
+	current := machineScope.ProxmoxMachine
+	const GiB = uint64(1024 * 1024 * 1024)
+
+	for _, pm := range pmList {
+		if pm.Name == current.Name {
+			continue
+		}
+		if pm.Status.ProxmoxNode == nil || *pm.Status.ProxmoxNode != nodeName {
+			continue
+		}
+		if ptr.Deref(pm.Status.Initialization.Provisioned, false) {
+			continue
+		}
+		if pm.Status.StorageSelection == nil || pm.Status.StorageSelection.AdditionalStorage == "" {
+			continue
+		}
+
+		pool := pm.Status.StorageSelection.AdditionalStorage
+		disks := pm.Spec.Disks
+		if disks == nil {
+			continue
+		}
+
+		for _, vol := range disks.AdditionalVolumes {
+			if vol.SizeGB <= 0 {
+				continue
+			}
+			if vol.Storage != nil && *vol.Storage != "" {
+				continue
+			}
+			if pm.Spec.Storage != nil && *pm.Spec.Storage != "" {
+				continue
+			}
+			reserved[pool] += uint64(vol.SizeGB) * GiB
+			reservedCount[pool]++
+		}
+	}
+
+	if len(reserved) > 0 {
+		machineScope.Logger.WithValues("node", nodeName).Info("reserved additional capacity by pool", "reservedBytes", reserved, "reservedVolumes", reservedCount)
+	}
+
+	return reserved, nil
+}
+
+func selectNodeStorages(ctx context.Context, machineScope *scope.MachineScope, nodeName string) (bootStorage, additionalStorage string, err error) {
+	if nodeName == "" {
+		return "", "", errors.New("node name is required to select storages")
+	}
+
+	storages, err := machineScope.InfraCluster.ProxmoxClient.ListNodeStorages(ctx, nodeName)
+	if err != nil {
+		return "", "", errors.Wrapf(err, "cannot list storages for node %s", nodeName)
+	}
+
+	var candidates []proxmox.StorageStatus
+	for _, s := range storages {
+		if !s.Enabled || !s.Active || s.Shared || !strings.Contains(s.Content, "images") {
+			continue
+		}
+		candidates = append(candidates, s)
+	}
+
+	if len(candidates) == 0 {
+		return "", "", fmt.Errorf("no eligible local image storages found on node %s", nodeName)
+	}
+
+	reserved, err := reservedAdditionalCapacityByPool(ctx, machineScope, nodeName)
+	if err != nil {
+		return "", "", err
+	}
+
+	effectiveFree := func(s proxmox.StorageStatus) uint64 {
+		base := s.Avail
+		if s.VirtualAvail > 0 {
+			base = s.VirtualAvail
+		}
+		if reservedBytes, ok := reserved[s.Name]; ok {
+			if reservedBytes >= base {
+				return 0
+			}
+			return base - reservedBytes
+		}
+		return base
+	}
+
+	logger := machineScope.Logger.WithValues("node", nodeName)
+	for _, c := range candidates {
+		logger.Info("storage candidate",
+			"name", c.Name,
+			"type", c.Type,
+			"enabled", c.Enabled,
+			"active", c.Active,
+			"shared", c.Shared,
+			"content", c.Content,
+			"total", c.Total,
+			"avail", c.Avail,
+			"virtualAllocated", c.VirtualAllocated,
+			"virtualAvail", c.VirtualAvail,
+			"reservedBytes", reserved[c.Name],
+			"effectiveFree", effectiveFree(c),
+		)
+	}
+
+	const GiB = uint64(1024 * 1024 * 1024)
+	var bootSizeBytes uint64
+	var largestAdditionalSizeBytes uint64
+
+	if disks := machineScope.ProxmoxMachine.Spec.Disks; disks != nil {
+		if disks.BootVolume != nil && disks.BootVolume.SizeGB > 0 {
+			bootSizeBytes = uint64(disks.BootVolume.SizeGB) * GiB
+		}
+		for _, vol := range disks.AdditionalVolumes {
+			if vol.SizeGB <= 0 {
+				continue
+			}
+			if vol.Storage != nil && *vol.Storage != "" {
+				continue
+			}
+			if machineScope.ProxmoxMachine.Spec.Storage != nil && *machineScope.ProxmoxMachine.Spec.Storage != "" {
+				continue
+			}
+			sizeBytes := uint64(vol.SizeGB) * GiB
+			if sizeBytes > largestAdditionalSizeBytes {
+				largestAdditionalSizeBytes = sizeBytes
+			}
+		}
+	}
+
+	bootCandidates := slices.Clone(candidates)
+	additionalCandidates := slices.Clone(candidates)
+
+	if bootSizeBytes > 0 {
+		bootCandidates = bootCandidates[:0]
+		for _, candidate := range candidates {
+			if effectiveFree(candidate) >= bootSizeBytes {
+				bootCandidates = append(bootCandidates, candidate)
+			}
+		}
+		if len(bootCandidates) == 0 {
+			return "", "", fmt.Errorf("no eligible local image storage on node %s has enough free capacity for boot disk", nodeName)
+		}
+	}
+
+	if largestAdditionalSizeBytes > 0 {
+		additionalCandidates = additionalCandidates[:0]
+		for _, candidate := range candidates {
+			if effectiveFree(candidate) >= largestAdditionalSizeBytes {
+				additionalCandidates = append(additionalCandidates, candidate)
+			}
+		}
+		if len(additionalCandidates) == 0 {
+			return "", "", fmt.Errorf("no eligible local image storage on node %s has enough free capacity for additional volumes", nodeName)
+		}
+	}
+
+	sort.SliceStable(bootCandidates, func(i, j int) bool {
+		return effectiveFree(bootCandidates[i]) > effectiveFree(bootCandidates[j])
+	})
+	sort.SliceStable(additionalCandidates, func(i, j int) bool {
+		return effectiveFree(additionalCandidates[i]) > effectiveFree(additionalCandidates[j])
+	})
+
+	bootStorage = bootCandidates[0].Name
+	additionalStorage = additionalCandidates[0].Name
+
+	logger.Info("selected node storages", "bootStorage", bootStorage, "additionalStorage", additionalStorage)
+	return bootStorage, additionalStorage, nil
 }
 
 func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneResponse, error) {
@@ -605,14 +1012,37 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 			return proxmox.VMCloneResponse{}, err
 		}
 	}
-	res, err := scope.InfraCluster.ProxmoxClient.CloneVM(ctx, int(templateID), options)
-	if err != nil {
-		return res, err
+
+	if scope.ProxmoxMachine.Status.ProxmoxNode != nil && strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode) != "" {
+		chosenNode := strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode)
+		if options.Target != "" && options.Target != chosenNode {
+			return proxmox.VMCloneResponse{}, fmt.Errorf("chosen proxmox node %q does not match scheduled target %q", chosenNode, options.Target)
+		}
+		options.Target = chosenNode
 	}
 
 	node := options.Target
 	if node == "" {
 		node = options.Node
+	}
+
+	if options.Storage == "" {
+		bootStorage, _, err := ensureStorageSelection(ctx, scope, node)
+		if err != nil {
+			conditions.Set(scope.ProxmoxMachine, metav1.Condition{
+				Type:    infrav1.ProxmoxMachineVirtualMachineProvisionedCondition,
+				Status:  metav1.ConditionFalse,
+				Reason:  infrav1.ProxmoxMachineVirtualMachineProvisionedVMProvisionFailedReason,
+				Message: err.Error(),
+			})
+			return proxmox.VMCloneResponse{}, err
+		}
+		options.Storage = bootStorage
+	}
+
+	res, err := scope.InfraCluster.ProxmoxClient.CloneVM(ctx, int(templateID), options)
+	if err != nil {
+		return res, err
 	}
 
 	scope.ProxmoxMachine.Status.ProxmoxNode = ptr.To(node)

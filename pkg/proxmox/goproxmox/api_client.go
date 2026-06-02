@@ -325,6 +325,71 @@ func (c *APIClient) GetReservableMemoryBytes(ctx context.Context, nodeName strin
 }
 
 // ResizeDisk resizes a VM disk to the specified size.
+
+// nodeStorageVolume represents a single volume entry returned by
+// /nodes/{node}/storage/{storage}/content for computing virtual allocation.
+type nodeStorageVolume struct {
+	Size  uint64 `json:"size,omitempty"`
+	Volid string `json:"volid,omitempty"`
+}
+
+func (c *APIClient) getNodeStorageContent(ctx context.Context, nodeName, storageName string) ([]nodeStorageVolume, error) {
+	path := fmt.Sprintf("/nodes/%s/storage/%s/content", nodeName, storageName)
+	var content []nodeStorageVolume
+	if err := c.Client.Get(ctx, path, &content); err != nil {
+		return nil, err
+	}
+	return content, nil
+}
+
+// ListNodeStorages lists all storages available on the given node and returns a
+// simplified view used by storage selection.
+func (c *APIClient) ListNodeStorages(ctx context.Context, nodeName string) ([]capmox.StorageStatus, error) {
+	node, err := c.Client.Node(ctx, nodeName)
+	if err != nil {
+		return nil, fmt.Errorf("cannot find node with name %s: %w", nodeName, err)
+	}
+
+	storages, err := node.Storages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("cannot list storages for node %s: %w", nodeName, err)
+	}
+
+	result := make([]capmox.StorageStatus, 0, len(storages))
+	for _, s := range storages {
+		status := capmox.StorageStatus{
+			Node:         s.Node,
+			Name:         s.Name,
+			Enabled:      s.Enabled == 1,
+			UsedFraction: s.UsedFraction,
+			Active:       s.Active == 1,
+			Content:      s.Content,
+			Shared:       s.Shared == 1,
+			Avail:        s.Avail,
+			Type:         s.Type,
+			Used:         s.Used,
+			Total:        s.Total,
+		}
+
+		vols, err := c.getNodeStorageContent(ctx, nodeName, s.Name)
+		if err != nil {
+			return nil, fmt.Errorf("cannot list content for storage %s on node %s: %w", s.Name, nodeName, err)
+		}
+
+		for _, vol := range vols {
+			status.VirtualAllocated += vol.Size
+		}
+
+		if status.Total >= status.VirtualAllocated {
+			status.VirtualAvail = status.Total - status.VirtualAllocated
+		}
+
+		result = append(result, status)
+	}
+
+	return result, nil
+}
+
 func (c *APIClient) ResizeDisk(ctx context.Context, vm *proxmox.VirtualMachine, disk, size string) (*proxmox.Task, error) {
 	return vm.ResizeDisk(ctx, disk, size)
 }
