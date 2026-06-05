@@ -411,6 +411,10 @@ func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Contex
 			claimName := claimNameFor(pm.Name, req.Name, i)
 			claim := &infrav1alpha1.ProxmoxPCIDeviceClaim{}
 			if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: claimName}, claim); err != nil {
+				if apierrors.IsNotFound(err) {
+					setProxmoxMachinePCIWaiting(pm, fmt.Sprintf("waiting for PCI device claim %s to exist", claimName))
+					return ctrl.Result{RequeueAfter: infrav1.DefaultReconcilerRequeue}, nil
+				}
 				return ctrl.Result{}, err
 			}
 
@@ -430,6 +434,19 @@ func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Contex
 	}
 
 	pm.Status.PCIDeviceAllocations = allocations
+
+	// If we previously paused the VM state machine while waiting for PCI
+	// allocation, resume it once all claims are bound. Otherwise ReconcileVM()
+	// will see the non-VM state "WaitingForPCIDevices", skip the VM lifecycle
+	// stages, and incorrectly mark the ProxmoxMachine ready before IPAM/bootstrap.
+	if conditions.GetReason(pm, infrav1.ProxmoxMachineVirtualMachineProvisionedCondition) == "WaitingForPCIDevices" {
+		conditions.Set(pm, metav1.Condition{
+			Type:   infrav1.ProxmoxMachineVirtualMachineProvisionedCondition,
+			Status: metav1.ConditionFalse,
+			Reason: infrav1.ProxmoxMachineVirtualMachineProvisionedCloningReason,
+		})
+	}
+
 	return ctrl.Result{}, nil
 }
 
