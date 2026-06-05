@@ -977,7 +977,11 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 		scope.InfraCluster.ProxmoxCluster.Status.NodeLocations = new(infrav1.NodeLocations)
 	}
 
-	if len(scope.InfraCluster.ProxmoxCluster.Spec.AllowedNodes) > 0 || len(scope.ProxmoxMachine.Spec.AllowedNodes) > 0 {
+	if scope.ProxmoxMachine.Status.ProxmoxNode != nil && strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode) != "" {
+		options.Target = strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode)
+	}
+
+	if options.Target == "" && (len(scope.InfraCluster.ProxmoxCluster.Spec.AllowedNodes) > 0 || len(scope.ProxmoxMachine.Spec.AllowedNodes) > 0) {
 		var err error
 		options.Target, err = selectNextNode(ctx, scope)
 		if err != nil {
@@ -1011,14 +1015,6 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 			}
 			return proxmox.VMCloneResponse{}, err
 		}
-	}
-
-	if scope.ProxmoxMachine.Status.ProxmoxNode != nil && strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode) != "" {
-		chosenNode := strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode)
-		if options.Target != "" && options.Target != chosenNode {
-			return proxmox.VMCloneResponse{}, fmt.Errorf("chosen proxmox node %q does not match scheduled target %q", chosenNode, options.Target)
-		}
-		options.Target = chosenNode
 	}
 
 	node := options.Target
