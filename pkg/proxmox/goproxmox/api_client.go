@@ -146,7 +146,7 @@ func (c *APIClient) FindVMResource(ctx context.Context, vmID uint64) (*proxmox.C
 }
 
 // FindVMTemplateByTags tries to find a VMID by its tags across the whole cluster.
-func (c *APIClient) FindVMTemplateByTags(ctx context.Context, templateTags []string, matchPolicy string) (string, int32, error) {
+func (c *APIClient) FindVMTemplateByTags(ctx context.Context, templateTags []string, matchPolicy string, preferredNode string) (string, int32, error) {
 	logger := log.FromContext(ctx)
 
 	cluster, err := c.Cluster(ctx)
@@ -167,7 +167,10 @@ func (c *APIClient) FindVMTemplateByTags(ctx context.Context, templateTags []str
 	templateTags = slices.Compact(templateTags)
 
 	var vmTemplate *proxmox.ClusterResource
+	var preferredTemplate *proxmox.ClusterResource
 	matches, bestDistance := 0, int(^uint(0)>>1)
+	ambiguousMatches := false
+	var bestNormalizedTags string
 NEXT_VM:
 	for _, vm := range vmResources {
 		if vm.Template == 0 || len(vm.Tags) == 0 {
@@ -198,14 +201,59 @@ NEXT_VM:
 			if distance > bestDistance {
 				continue NEXT_VM
 			}
-			bestDistance = distance
+			if distance < bestDistance {
+				// Strictly better match found: reset state so only candidates
+				// at this new best distance are tracked.
+				bestDistance = distance
+				matches = 0
+				vmTemplate = nil
+				ambiguousMatches = false
+				bestNormalizedTags = ""
+			} else if bestNormalizedTags != "" {
+				// Tie at current best distance: check whether the tag set is
+				// identical to the first match (e.g. the same template
+				// replicated across nodes). Differing tag sets are ambiguous.
+				vmTagsSorted := make([]string, 0, len(vmTagMap))
+				for tag := range vmTagMap {
+					vmTagsSorted = append(vmTagsSorted, tag)
+				}
+				slices.Sort(vmTagsSorted)
+				if strings.Join(vmTagsSorted, ";") != bestNormalizedTags {
+					ambiguousMatches = true
+				}
+			}
+		}
+
+		if bestNormalizedTags == "" && infrav1.TemplateMatchPolicy(matchPolicy) == infrav1.TemplateMatchPolicyBest {
+			vmTagsSorted := make([]string, 0, len(vmTagMap))
+			for tag := range vmTagMap {
+				vmTagsSorted = append(vmTagsSorted, tag)
+			}
+			slices.Sort(vmTagsSorted)
+			bestNormalizedTags = strings.Join(vmTagsSorted, ";")
 		}
 
 		matches++
 		vmTemplate = vm
+		if preferredNode != "" && vm.Node == preferredNode {
+			preferredTemplate = vm
+		}
 	}
 
-	if matches != 1 {
+	// For bestSubset, ties at the best distance are acceptable when all tied
+	// templates have identical tags (e.g. the same template replicated across
+	// nodes). Genuinely different templates at the same distance are ambiguous.
+	// For exact and uniqueSubset, exactly one match is required.
+	if infrav1.TemplateMatchPolicy(matchPolicy) == infrav1.TemplateMatchPolicyBest {
+		if matches == 0 || ambiguousMatches {
+			return "", -1, fmt.Errorf("%w: found %d VM templates with tags %q", ErrTemplateNotFound, matches, strings.Join(templateTags, ";"))
+		}
+		// Prefer the template on the target node to avoid cross-node cloning
+		// to local storage. Fall back to any matched template if not found.
+		if preferredTemplate != nil {
+			vmTemplate = preferredTemplate
+		}
+	} else if matches != 1 {
 		return "", -1, fmt.Errorf("%w: found %d VM templates with tags %q", ErrTemplateNotFound, matches, strings.Join(templateTags, ";"))
 	}
 

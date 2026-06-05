@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	lutherproxmox "github.com/luthermonson/go-proxmox"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -179,7 +180,7 @@ func TestEnsureVirtualMachine_CreateVM_FullOptions_TemplateSelector(t *testing.T
 	// ResolutionPolicy is not set on the TemplateSelector in this test, so the default
 	// policy is "exact". The vmservice must therefore pass "exact" to FindVMTemplateByTags.
 	proxmoxClient.EXPECT().
-		FindVMTemplateByTags(context.Background(), vmTemplateTags, string(infrav1.TemplateMatchPolicyExact)).
+		FindVMTemplateByTags(context.Background(), vmTemplateTags, string(infrav1.TemplateMatchPolicyExact), mock.Anything).
 		Return("node1", 123, nil).
 		Once()
 
@@ -217,7 +218,7 @@ func TestEnsureVirtualMachine_CreateVM_FullOptions_TemplateSelector_VMTemplateNo
 	machineScope.ProxmoxMachine.Spec.Storage = ptr.To("storage")
 	machineScope.ProxmoxMachine.Spec.AllowedNodes = []string{"node2"}
 
-	proxmoxClient.EXPECT().FindVMTemplateByTags(context.Background(), vmTemplateTags, "exact").Return("", -1, goproxmox.ErrTemplateNotFound).Once()
+	proxmoxClient.EXPECT().FindVMTemplateByTags(context.Background(), vmTemplateTags, "exact", mock.Anything).Return("", -1, goproxmox.ErrTemplateNotFound).Once()
 	proxmoxClient.EXPECT().GetReservableMemoryBytes(context.Background(), "node2", int64(100)).Return(^uint64(0), nil).Once()
 
 	_, err := createVM(ctx, machineScope)

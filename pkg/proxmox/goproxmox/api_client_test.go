@@ -387,12 +387,17 @@ func TestProxmoxAPIClient_FindVMTemplateByTags(t *testing.T) {
 		&proxmox.ClusterResource{VMID: 402, Name: "flatcar-k8s-v1.33.9", Node: "capmox03", Tags: "capmox;flatcar;staging;v1.33.9", Template: uint64(1)},
 		&proxmox.ClusterResource{VMID: 403, Name: "flatcar-k8s-v1.34.5", Node: "capmox03", Tags: "capic;flatcar;devel;v1.34.5", Template: uint64(1)},
 		&proxmox.ClusterResource{VMID: 404, Name: "flatcar-k8s-v1.35.2", Node: "capmox03", Tags: "capmox;flatcar;devel;v1.35.1", Template: uint64(1)},
+		// Replicated template: same tags across three nodes (simulates per-node local storage copies).
+		&proxmox.ClusterResource{VMID: 501, Name: "ubuntu-24.04-k8s-v1.35.4", Node: "capmox01", Tags: "capmox;ubuntu-24-04;k8s-1-35-4", Template: uint64(1)},
+		&proxmox.ClusterResource{VMID: 502, Name: "ubuntu-24.04-k8s-v1.35.4", Node: "capmox02", Tags: "capmox;ubuntu-24-04;k8s-1-35-4", Template: uint64(1)},
+		&proxmox.ClusterResource{VMID: 503, Name: "ubuntu-24.04-k8s-v1.35.4", Node: "capmox03", Tags: "capmox;ubuntu-24-04;k8s-1-35-4", Template: uint64(1)},
 	}
 	tests := []struct {
 		name           string
 		http           []int
 		vmTags         []string
 		matchPolicy    infrav1.TemplateMatchPolicy
+		preferredNode  string
 		fails          bool
 		err            string
 		vmTemplateNode string
@@ -426,7 +431,7 @@ func TestProxmoxAPIClient_FindVMTemplateByTags(t *testing.T) {
 			vmTags:         nil,
 			matchPolicy:    infrav1.TemplateMatchPolicySubset,
 			fails:          true,
-			err:            "VM template not found: found 9 VM templates with tags \"\"",
+			err:            "VM template not found: found 12 VM templates with tags \"\"",
 			vmTemplateNode: "capmox01",
 			vmTemplateID:   201,
 		},
@@ -511,6 +516,30 @@ func TestProxmoxAPIClient_FindVMTemplateByTags(t *testing.T) {
 			vmTemplateID:   19229,
 			vmTemplateNode: "we're a serious company, sir",
 		},
+		{
+			// Same template replicated across multiple nodes (local storage): identical
+			// tags, different VMIDs/nodes. bestSubset should succeed and return one of them.
+			name:           "find-replicated-template-best-subset",
+			http:           []int{200, 200},
+			vmTags:         []string{"capmox", "ubuntu-24-04", "k8s-1-35-4"},
+			matchPolicy:    infrav1.TemplateMatchPolicyBest,
+			fails:          false,
+			err:            "",
+			vmTemplateNode: "capmox03",
+			vmTemplateID:   503,
+		},
+		{
+			// Replicated template with a preferred node: should return the copy on the preferred node.
+			name:           "find-replicated-template-best-subset-preferred-node",
+			http:           []int{200, 200},
+			vmTags:         []string{"capmox", "ubuntu-24-04", "k8s-1-35-4"},
+			matchPolicy:    infrav1.TemplateMatchPolicyBest,
+			preferredNode:  "capmox02",
+			fails:          false,
+			err:            "",
+			vmTemplateNode: "capmox02",
+			vmTemplateID:   502,
+		},
 	}
 
 	for _, test := range tests {
@@ -522,7 +551,7 @@ func TestProxmoxAPIClient_FindVMTemplateByTags(t *testing.T) {
 			httpmock.RegisterResponder(http.MethodGet, `=~/cluster/resources`,
 				newJSONResponder(test.http[1], proxmoxClusterResources))
 
-			vmTemplateNode, vmTemplateID, err := client.FindVMTemplateByTags(context.Background(), test.vmTags, string(test.matchPolicy))
+			vmTemplateNode, vmTemplateID, err := client.FindVMTemplateByTags(context.Background(), test.vmTags, string(test.matchPolicy), test.preferredNode)
 
 			if test.fails {
 				require.Error(t, err)

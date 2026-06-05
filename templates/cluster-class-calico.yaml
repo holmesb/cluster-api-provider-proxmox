@@ -90,6 +90,12 @@ spec:
   - definitions:
     - jsonPatches:
       - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration
+        valueFrom:
+          template: |
+            apiServer:
+              extraArgs: []
+      - op: add
         path: /spec/template/spec/kubeadmConfigSpec/users
         valueFrom:
           template: |
@@ -206,6 +212,7 @@ spec:
           machineDeploymentClass:
             names:
             - proxmox-worker
+            - proxmox-worker-gpu
     description: Configure Worker Node Initialisation
     name: WorkerNodeSetup
   - definitions:
@@ -229,6 +236,8 @@ spec:
   - enabledIf: '{{ if (index .cloneSpec.machineSpec 0).templateID }}true{{ end }}'
     definitions:
       - jsonPatches:
+          - op: remove
+            path: /spec/template/spec/templateSelector
           - op: add
             path: /spec/template/spec/sourceNode
             valueFrom:
@@ -261,6 +270,8 @@ spec:
   - enabledIf: '{{ if (index .cloneSpec.machineSpec 1).templateID }}true{{ end }}'
     definitions:
       - jsonPatches:
+          - op: remove
+            path: /spec/template/spec/templateSelector
           - op: add
             path: /spec/template/spec/sourceNode
             valueFrom:
@@ -299,6 +310,8 @@ spec:
   - enabledIf: '{{ if (index .cloneSpec.machineSpec 2).templateID }}true{{ end }}'
     definitions:
       - jsonPatches:
+          - op: remove
+            path: /spec/template/spec/templateSelector
           - op: add
             path: /spec/template/spec/sourceNode
             valueFrom:
@@ -363,6 +376,7 @@ spec:
           machineDeploymentClass:
             names:
             - proxmox-worker
+            - proxmox-worker-gpu
     description: Configure Worker Node Sockets
     enabledIf: '{{ if (index .cloneSpec.machineSpec 1).numSockets }}true{{ end }}'
     name: WorkerNodeSockets
@@ -412,6 +426,7 @@ spec:
           machineDeploymentClass:
             names:
             - proxmox-worker
+            - proxmox-worker-gpu
     description: Configure Worker Node Cores
     enabledIf: '{{ if (index .cloneSpec.machineSpec 1).numCores }}true{{ end }}'
     name: WorkerNodeCores
@@ -429,6 +444,7 @@ spec:
           machineDeploymentClass:
             names:
             - proxmox-worker
+            - proxmox-worker-gpu
     description: Configure LoadBalancer Node Cores
     enabledIf: '{{ if (index .cloneSpec.machineSpec 2).numCores }}true{{ end }}'
     name: LoadBalancerCores
@@ -460,6 +476,7 @@ spec:
           machineDeploymentClass:
             names:
             - proxmox-worker
+            - proxmox-worker-gpu
     description: Configure WorkerNode Qemu Disk Format
     enabledIf: '{{ if (index .cloneSpec.machineSpec 1).format }}true{{ end }}'
     name: WorkerNodeCloneDiskFormat
@@ -508,6 +525,7 @@ spec:
           machineDeploymentClass:
             names:
             - proxmox-worker
+            - proxmox-worker-gpu
     description: Configure WorkerNode Memory
     enabledIf: '{{ if (index .cloneSpec.machineSpec 1).memoryMiB }}true{{ end }}'
     name: WorkerNodeMem
@@ -556,6 +574,7 @@ spec:
           machineDeploymentClass:
             names:
             - proxmox-worker
+            - proxmox-worker-gpu
     description: Configure WorkerNode Network Adapters
     enabledIf: '{{ if (index .cloneSpec.machineSpec 1).network }}true{{ end }}'
     name: WorkerNodeDefaultNetwork
@@ -576,6 +595,264 @@ spec:
     description: Configure LoadBalancer Network Adapters
     enabledIf: '{{ if (index .cloneSpec.machineSpec 2).network }}true{{ end }}'
     name: LoadBalancerDefaultNetwork
+  - name: gpu-model-key
+    description: Optionally pin GPU worker claims to a specific PCI model_key.
+    enabledIf: '{{ if .gpuModelKey }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: false
+          machineDeploymentClass:
+            names:
+            - proxmox-worker-gpu
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/pciDeviceRequests/0/selector/matchLabels/model_key
+        valueFrom:
+          variable: gpuModelKey
+  - name: disks-init
+    description: Initialise .spec.disks as an empty object for worker/load-balancer PMTs.
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: false
+          machineDeploymentClass:
+            names:
+            - proxmox-worker
+            - proxmox-worker-gpu
+            - proxmox-loadbalancer
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/disks
+        value: {}
+  - name: disks-init-controlplane
+    description: Initialise .spec.disks as an empty object for control-plane PMTs.
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/disks
+        value: {}
+  - name: worker-additional-volumes
+    description: Add additional disks to workers via variable.
+    enabledIf: '{{ if .workerAdditionalVolumes }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: false
+          machineDeploymentClass:
+            names:
+            - proxmox-worker
+            - proxmox-worker-gpu
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/disks/additionalVolumes
+        valueFrom:
+          template: |
+            {{- range $i, $v := .workerAdditionalVolumes }}
+            - { disk: {{ $v.disk }}, sizeGb: {{ $v.sizeGb }}
+              {{- if $v.storage }}, storage: {{ $v.storage }}{{- end }}
+              {{- if $v.format }}, format: {{ $v.format }}{{- end }}
+              {{- if hasKey $v "discard" }}, discard: {{ $v.discard }}{{- end }}
+              {{- if hasKey $v "ioThread" }}, ioThread: {{ $v.ioThread }}{{- end }}
+              {{- if hasKey $v "ssd" }}, ssd: {{ $v.ssd }}{{- end }} }
+            {{- end }}
+  - name: worker-storage
+    description: Default Proxmox storage for worker nodes.
+    enabledIf: '{{ if .workerStorage }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: false
+          machineDeploymentClass:
+            names:
+            - proxmox-worker
+            - proxmox-worker-gpu
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/storage
+        valueFrom:
+          variable: workerStorage
+  - name: controlplane-additional-volumes
+    description: Add additional disks to control-plane nodes via variable.
+    enabledIf: '{{ if .controlPlaneAdditionalVolumes }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/disks/additionalVolumes
+        valueFrom:
+          template: |
+            {{- range $i, $v := .controlPlaneAdditionalVolumes }}
+            - { disk: {{ $v.disk }}, sizeGb: {{ $v.sizeGb }}
+              {{- if $v.storage }}, storage: {{ $v.storage }}{{- end }}
+              {{- if $v.format }}, format: {{ $v.format }}{{- end }}
+              {{- if hasKey $v "discard" }}, discard: {{ $v.discard }}{{- end }}
+              {{- if hasKey $v "ioThread" }}, ioThread: {{ $v.ioThread }}{{- end }}
+              {{- if hasKey $v "ssd" }}, ssd: {{ $v.ssd }}{{- end }} }
+            {{- end }}
+  - name: control-plane-storage
+    description: Default Proxmox storage for control-plane nodes.
+    enabledIf: '{{ if .controlPlaneStorage }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/storage
+        valueFrom:
+          variable: controlPlaneStorage
+  - name: lb-additional-volumes
+    description: Add additional disks to load-balancers via variable.
+    enabledIf: '{{ if .loadbalancerAdditionalVolumes }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: false
+          machineDeploymentClass:
+            names:
+            - proxmox-loadbalancer
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/disks/additionalVolumes
+        valueFrom:
+          template: |
+            {{- range $i, $v := .loadbalancerAdditionalVolumes }}
+            - { disk: {{ $v.disk }}, sizeGb: {{ $v.sizeGb }}
+              {{- if $v.storage }}, storage: {{ $v.storage }}{{- end }}
+              {{- if $v.format }}, format: {{ $v.format }}{{- end }}
+              {{- if hasKey $v "discard" }}, discard: {{ $v.discard }}{{- end }}
+              {{- if hasKey $v "ioThread" }}, ioThread: {{ $v.ioThread }}{{- end }}
+              {{- if hasKey $v "ssd" }}, ssd: {{ $v.ssd }}{{- end }} }
+            {{- end }}
+  - name: load-balancer-storage
+    description: Default Proxmox storage for load-balancer nodes.
+    enabledIf: '{{ if .loadBalancerStorage }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: false
+          machineDeploymentClass:
+            names:
+            - proxmox-loadbalancer
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/storage
+        valueFrom:
+          variable: loadBalancerStorage
+  - name: apiserver-extraargs
+    description: Set kubeadm clusterConfiguration.apiServer.extraArgs from a variable map.
+    enabledIf: '{{ if .apiServerExtraArgs }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+        kind: KubeadmControlPlaneTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs
+        valueFrom:
+          variable: apiServerExtraArgs
+  - name: controllermanager-extraargs
+    enabledIf: '{{ if .controllerManagerExtraArgs }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+        kind: KubeadmControlPlaneTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/controllerManager
+        value: {}
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/controllerManager/extraArgs
+        valueFrom:
+          variable: controllerManagerExtraArgs
+  - name: etcdlocal-extra-args
+    description: Optionally set local etcd extraArgs via variable.
+    enabledIf: '{{ if .etcdLocal }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+        kind: KubeadmControlPlaneTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd
+        valueFrom:
+          variable: etcdLocal
+  - name: scheduler-extraargs
+    description: Optionally set kube-scheduler extraArgs via variable.
+    enabledIf: '{{ if .schedulerExtraArgs }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+        kind: KubeadmControlPlaneTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/scheduler
+        value: {}
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/scheduler/extraArgs
+        valueFrom:
+          variable: schedulerExtraArgs
+  - name: nodes-vlan-id
+    description: Set the primary Proxmox network device VLAN from nodesVlanId.
+    enabledIf: '{{ if .nodesVlanId }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/network/networkDevices/0/vlan
+        valueFrom:
+          variable: nodesVlanId
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: ProxmoxMachineTemplate
+        matchResources:
+          controlPlane: false
+          machineDeploymentClass:
+            names:
+            - proxmox-worker
+            - proxmox-worker-gpu
+            - proxmox-loadbalancer
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/network/networkDevices/0/vlan
+        valueFrom:
+          variable: nodesVlanId
   variables:
   - name: controlPlaneEndpoint
     required: true
@@ -668,7 +945,203 @@ spec:
             - ipvs
             - iptables
             type: string
+          nodePortAddresses:
+            default:
+            - primary
+            items:
+              type: string
+            type: array
         type: object
+  - name: controllerManagerExtraArgs
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: array
+        default:
+          - name: bind-address
+            value: "0.0.0.0"
+        items:
+          type: object
+          properties:
+            name:
+              type: string
+            value:
+              type: string
+  - name: schedulerExtraArgs
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: array
+        default:
+          - name: bind-address
+            value: "0.0.0.0"
+        items:
+          type: object
+          properties:
+            name:
+              type: string
+            value:
+              type: string
+  - name: etcdLocal
+    required: false
+    schema:
+      openAPIV3Schema:
+        properties:
+          local:
+            properties:
+              extraArgs:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    value:
+                      type: string
+            type: object
+        type: object
+  - name: apiServerExtraArgs
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: array
+        items:
+          type: object
+          properties:
+            name:
+              type: string
+            value:
+              type: string
+  - name: nodesVlanId
+    required: false
+    schema:
+      openAPIV3Schema:
+        maximum: 4094
+        minimum: 1
+        type: integer
+  - name: podCidr
+    required: true
+    schema:
+      openAPIV3Schema:
+        description: Per-cluster Pod CIDR, for example 10.128.0.0/16
+        type: string
+  - name: serviceCidr
+    required: true
+    schema:
+      openAPIV3Schema:
+        description: Per-cluster Service CIDR, for example 10.144.0.0/18
+        type: string
+  - name: gpuModelKey
+    required: false
+    schema:
+      openAPIV3Schema:
+        description: Optional GPU model selector, for example PCI vendor:device 10de:1234.
+        type: string
+  - name: workerAdditionalVolumes
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: array
+        items:
+          type: object
+          required:
+          - disk
+          - sizeGb
+          properties:
+            disk:
+              type: string
+            sizeGb:
+              minimum: 5
+              type: integer
+            storage:
+              type: string
+            format:
+              enum:
+              - raw
+              - qcow2
+              - vmdk
+              type: string
+            discard:
+              type: boolean
+            ioThread:
+              type: boolean
+            ssd:
+              type: boolean
+  - name: workerStorage
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: string
+  - name: controlPlaneAdditionalVolumes
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: array
+        items:
+          type: object
+          required:
+          - disk
+          - sizeGb
+          properties:
+            disk:
+              type: string
+            sizeGb:
+              minimum: 5
+              type: integer
+            storage:
+              type: string
+            format:
+              enum:
+              - raw
+              - qcow2
+              - vmdk
+              type: string
+            discard:
+              type: boolean
+            ioThread:
+              type: boolean
+            ssd:
+              type: boolean
+  - name: controlPlaneStorage
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: string
+  - name: loadbalancerAdditionalVolumes
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: array
+        items:
+          type: object
+          required:
+          - disk
+          - sizeGb
+          properties:
+            disk:
+              type: string
+            sizeGb:
+              minimum: 5
+              type: integer
+            storage:
+              type: string
+            format:
+              enum:
+              - raw
+              - qcow2
+              - vmdk
+              type: string
+            discard:
+              type: boolean
+            ioThread:
+              type: boolean
+            ssd:
+              type: boolean
+  - name: loadBalancerStorage
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: string
   - name: cloneSpec
     required: true
     schema:
@@ -699,7 +1172,48 @@ spec:
                         sizeGb:
                           format: int32
                           type: integer
+                        storage:
+                          type: string
+                        format:
+                          enum:
+                          - raw
+                          - qcow2
+                          - vmdk
+                          type: string
+                        discard:
+                          type: boolean
+                        ioThread:
+                          type: boolean
+                        ssd:
+                          type: boolean
                       type: object
+                    additionalVolumes:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          disk:
+                            type: string
+                          sizeGb:
+                            format: int32
+                            type: integer
+                          storage:
+                            type: string
+                          format:
+                            enum:
+                            - raw
+                            - qcow2
+                            - vmdk
+                            type: string
+                          discard:
+                            type: boolean
+                          ioThread:
+                            type: boolean
+                          ssd:
+                            type: boolean
+                        required:
+                        - disk
+                        - sizeGb
                   type: object
                 format:
                   enum:
@@ -945,9 +1459,10 @@ spec:
                       items:
                         type: string
                       type: array
-                    resolutionPolicy:
+                    matchPolicy:
                       type: string
-                      enum: ["exact","subset"]
+                      enum: ["exact","uniqueSubset","bestSubset"]
+                      default: "bestSubset"
                   required:
                     - matchTags
                   type: object
@@ -1027,6 +1542,36 @@ spec:
           name: proxmox-clusterclass-v0.2.1-workertemplate
       metadata:
         labels:
+          node-role.kubernetes.io/node: ""
+    - class: proxmox-worker-gpu
+      healthCheck:
+        checks:
+          nodeStartupTimeoutSeconds: 900
+          unhealthyNodeConditions:
+          - status: Unknown
+            timeoutSeconds: 300
+            type: Ready
+          - status: "False"
+            timeoutSeconds: 300
+            type: Ready
+        remediation:
+          triggerIf:
+            unhealthyLessThanOrEqualTo: "33%"
+      naming:
+        template: '{{ .cluster.name }}-gpu-worker-{{ .random }}'
+      bootstrap:
+        templateRef:
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+          kind: KubeadmConfigTemplate
+          name: proxmox-clusterclass-v0.2.0-workertemplate
+      infrastructure:
+        templateRef:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+          kind: ProxmoxMachineTemplate
+          name: proxmox-clusterclass-v0.2.1-workertemplate-gpu
+      metadata:
+        labels:
+          node-role.kubernetes.io/gpu: ""
           node-role.kubernetes.io/node: ""
     - class: proxmox-loadbalancer
       healthCheck:
@@ -1136,7 +1681,7 @@ spec:
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
 kind: ProxmoxClusterTemplate
 metadata:
-  name: proxmox-clusterclass-calico-v0.2.0-clustertemplate
+  name: proxmox-clusterclass-cilium-v0.2.0-clustertemplate
 spec:
   template:
     spec:
@@ -1158,6 +1703,9 @@ metadata:
 spec:
   template:
     spec:
+      templateSelector:
+        matchTags:
+        - placeholder-template
       format: qcow2
       full: true
       network:
@@ -1173,8 +1721,33 @@ metadata:
 spec:
   template:
     spec:
+      templateSelector:
+        matchTags:
+        - placeholder-template
       format: qcow2
       full: true
+      network:
+        networkDevices:
+        - name: net0
+          bridge: ${BRIDGE}
+          model: virtio
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxMachineTemplate
+metadata:
+  name: proxmox-clusterclass-v0.2.1-workertemplate-gpu
+spec:
+  template:
+    spec:
+      templateSelector:
+        matchTags:
+        - placeholder-template
+      format: qcow2
+      full: true
+      pciDeviceRequests:
+      - name: gpu
+        selector:
+          matchLabels: {}
       network:
         networkDevices:
         - name: net0
@@ -1188,6 +1761,9 @@ metadata:
 spec:
   template:
     spec:
+      templateSelector:
+        matchTags:
+        - placeholder-template
       format: qcow2
       full: true
       network:

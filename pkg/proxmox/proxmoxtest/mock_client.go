@@ -389,9 +389,9 @@ func (_c *MockClient_FindVMResource_Call) RunAndReturn(run func(context.Context,
 	return _c
 }
 
-// FindVMTemplateByTags provides a mock function with given fields: ctx, templateTags, resolutionPolicy
-func (_m *MockClient) FindVMTemplateByTags(ctx context.Context, templateTags []string, resolutionPolicy string) (string, int32, error) {
-	ret := _m.Called(ctx, templateTags, resolutionPolicy)
+// FindVMTemplateByTags provides a mock function with given fields: ctx, templateTags, resolutionPolicy, preferredNode
+func (_m *MockClient) FindVMTemplateByTags(ctx context.Context, templateTags []string, resolutionPolicy string, preferredNode string) (string, int32, error) {
+	ret := _m.Called(ctx, templateTags, resolutionPolicy, preferredNode)
 
 	if len(ret) == 0 {
 		panic("no return value specified for FindVMTemplateByTags")
@@ -400,23 +400,23 @@ func (_m *MockClient) FindVMTemplateByTags(ctx context.Context, templateTags []s
 	var r0 string
 	var r1 int32
 	var r2 error
-	if rf, ok := ret.Get(0).(func(context.Context, []string, string) (string, int32, error)); ok {
-		return rf(ctx, templateTags, resolutionPolicy)
+	if rf, ok := ret.Get(0).(func(context.Context, []string, string, string) (string, int32, error)); ok {
+		return rf(ctx, templateTags, resolutionPolicy, preferredNode)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, []string, string) string); ok {
-		r0 = rf(ctx, templateTags, resolutionPolicy)
+	if rf, ok := ret.Get(0).(func(context.Context, []string, string, string) string); ok {
+		r0 = rf(ctx, templateTags, resolutionPolicy, preferredNode)
 	} else {
 		r0 = ret.Get(0).(string)
 	}
 
-	if rf, ok := ret.Get(1).(func(context.Context, []string, string) int32); ok {
-		r1 = rf(ctx, templateTags, resolutionPolicy)
+	if rf, ok := ret.Get(1).(func(context.Context, []string, string, string) int32); ok {
+		r1 = rf(ctx, templateTags, resolutionPolicy, preferredNode)
 	} else {
 		r1 = ret.Get(1).(int32)
 	}
 
-	if rf, ok := ret.Get(2).(func(context.Context, []string, string) error); ok {
-		r2 = rf(ctx, templateTags, resolutionPolicy)
+	if rf, ok := ret.Get(2).(func(context.Context, []string, string, string) error); ok {
+		r2 = rf(ctx, templateTags, resolutionPolicy, preferredNode)
 	} else {
 		r2 = ret.Error(2)
 	}
@@ -433,13 +433,14 @@ type MockClient_FindVMTemplateByTags_Call struct {
 //   - ctx context.Context
 //   - templateTags []string
 //   - resolutionPolicy string
-func (_e *MockClient_Expecter) FindVMTemplateByTags(ctx interface{}, templateTags interface{}, resolutionPolicy interface{}) *MockClient_FindVMTemplateByTags_Call {
-	return &MockClient_FindVMTemplateByTags_Call{Call: _e.mock.On("FindVMTemplateByTags", ctx, templateTags, resolutionPolicy)}
+//   - preferredNode string
+func (_e *MockClient_Expecter) FindVMTemplateByTags(ctx interface{}, templateTags interface{}, resolutionPolicy interface{}, preferredNode interface{}) *MockClient_FindVMTemplateByTags_Call {
+	return &MockClient_FindVMTemplateByTags_Call{Call: _e.mock.On("FindVMTemplateByTags", ctx, templateTags, resolutionPolicy, preferredNode)}
 }
 
-func (_c *MockClient_FindVMTemplateByTags_Call) Run(run func(ctx context.Context, templateTags []string, resolutionPolicy string)) *MockClient_FindVMTemplateByTags_Call {
+func (_c *MockClient_FindVMTemplateByTags_Call) Run(run func(ctx context.Context, templateTags []string, resolutionPolicy string, preferredNode string)) *MockClient_FindVMTemplateByTags_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].([]string), args[2].(string))
+		run(args[0].(context.Context), args[1].([]string), args[2].(string), args[3].(string))
 	})
 	return _c
 }
@@ -449,7 +450,7 @@ func (_c *MockClient_FindVMTemplateByTags_Call) Return(_a0 string, _a1 int32, _a
 	return _c
 }
 
-func (_c *MockClient_FindVMTemplateByTags_Call) RunAndReturn(run func(context.Context, []string, string) (string, int32, error)) *MockClient_FindVMTemplateByTags_Call {
+func (_c *MockClient_FindVMTemplateByTags_Call) RunAndReturn(run func(context.Context, []string, string, string) (string, int32, error)) *MockClient_FindVMTemplateByTags_Call {
 	_c.Call.Return(run)
 	return _c
 }
