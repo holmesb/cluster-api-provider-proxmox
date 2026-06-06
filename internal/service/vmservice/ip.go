@@ -43,7 +43,7 @@ func reconcileIPAddresses(ctx context.Context, machineScope *scope.MachineScope)
 		return false, nil
 	}
 
-	machineScope.Logger.V(4).Info("reconciling IPAddresses.")
+	machineScope.Logger.Info("reconciling IPAddresses", "machineName", machineScope.ProxmoxMachine.GetName())
 	pm := machineScope.ProxmoxMachine
 
 	// TODO: This datastructure is less bad, but still bad
@@ -62,13 +62,14 @@ func reconcileIPAddresses(ctx context.Context, machineScope *scope.MachineScope)
 	defaultDevicePools := netPoolAddresses["default"]
 	for _, ipAddresses := range defaultDevicePools {
 		// Todo: This is not necessarily the default IP.
+		machineScope.Logger.Info("using default IP address for VM tag", "pool", ipAddresses[0].Spec.PoolRef.Name, "address", ipAddresses[0].Spec.Address)
 		_, err := setVMIPAddressTag(ctx, machineScope, ipAddresses[0])
 		if err != nil {
 			return false, err
 		}
 	}
 
-	machineScope.Logger.V(4).Info("updating the ProxmoxMachine's IP addresses.")
+	machineScope.Logger.Info("updating ProxmoxMachine IP addresses", "networkCount", len(netPoolAddresses))
 	for net, pools := range netPoolAddresses {
 		addresses := slices.Concat(slices.Collect(maps.Values(pools))...)
 		slices.SortFunc(addresses, func(a, b ipamv1.IPAddress) int {
@@ -89,6 +90,7 @@ func reconcileIPAddresses(ctx context.Context, machineScope *scope.MachineScope)
 		pm.SetIPAddresses(ipSpec)
 	}
 
+	machineScope.Logger.Info("IPAddresses reconciled; moving to bootstrap data reconciliation")
 	conditions.Set(pm, metav1.Condition{
 		Type:   infrav1.ProxmoxMachineVirtualMachineProvisionedCondition,
 		Status: metav1.ConditionFalse,
@@ -108,7 +110,7 @@ func setVMIPAddressTag(ctx context.Context, machineScope *scope.MachineScope, ip
 	// TODO: IPv6 tag?
 	// Add ipv4 tag if the Virtual Machine doesn't have it.
 	if vm := machineScope.VirtualMachine; !vm.HasTag(ipTag) && isIPv4(ipAddress.Spec.Address) {
-		machineScope.Logger.V(4).Info("adding virtual machine ip tag.", "ip", ipAddress.Spec.Address)
+		machineScope.Logger.Info("adding virtual machine IP tag", "ip", ipAddress.Spec.Address, "tag", ipTag)
 		t, err := machineScope.InfraCluster.ProxmoxClient.TagVM(ctx, vm, ipTag)
 		if err != nil {
 			return false, errors.Wrapf(err, "unable to add IP tag to VirtualMachine %s", machineScope.Name())
@@ -168,7 +170,7 @@ func handleIPAddresses(ctx context.Context, machineScope *scope.MachineScope, ip
 	})
 
 	if index < 0 {
-		machineScope.Logger.V(4).Info("IPAddress not found, creating it.", "device", device)
+		machineScope.Logger.Info("IPAddress not found; creating IPAddressClaim", "device", device, "pool", ipClaimDef.PoolRef.Name, "poolKind", ipClaimDef.PoolRef.Kind, "poolAPIVersion", ipClaimDef.PoolRef.APIGroup, "offset", ipClaimDef.Annotations[infrav1.ProxmoxPoolOffsetAnnotation])
 		// IP address not yet created.
 		err = machineScope.IPAMHelper.CreateIPAddressClaim(ctx, machineScope.ProxmoxMachine, ipClaimDef)
 		if err != nil {
@@ -179,7 +181,7 @@ func handleIPAddresses(ctx context.Context, machineScope *scope.MachineScope, ip
 		return []ipamv1.IPAddress{}, nil
 	}
 
-	machineScope.Logger.V(4).Info("IPAddresses found, ", "ip", ipAddresses, "device", device)
+	machineScope.Logger.Info("IPAddresses found", "device", device, "pool", ipClaimDef.PoolRef.Name, "addressCount", len(ipAddresses))
 	return ipAddresses, nil
 }
 
@@ -200,6 +202,7 @@ func handleDevices(ctx context.Context, machineScope *scope.MachineScope, addres
 
 	requeue := false
 	for _, net := range networkSpec.NetworkDevices {
+		machineScope.Logger.Info("reconciling network device IPAM", "device", net.Name, "defaultIPv4", ptr.Deref(net.DefaultIPv4, false), "defaultIPv6", ptr.Deref(net.DefaultIPv6, false), "explicitPoolCount", len(net.InterfaceConfig.IPPoolRef))
 		pools := []corev1.TypedLocalObjectReference{}
 
 		// append default pools in front if they exist.
@@ -228,12 +231,14 @@ func handleDevices(ctx context.Context, machineScope *scope.MachineScope, addres
 				ipClaimDef.Annotations[infrav1.ProxmoxDefaultGatewayAnnotation] = "true"
 			}
 
+			machineScope.Logger.Info("reconciling IPAddressClaim", "device", net.Name, "pool", ipPool.Name, "poolKind", ipPool.Kind, "offset", i)
 			ipAddresses, err := handleIPAddresses(ctx, machineScope, ipClaimDef)
 			if err != nil {
 				return true, errors.Wrapf(err, "unable to handle IPAddress for device %+v, pool %s", net.Name, ipPool.Name)
 			}
 			// fast track ip address generation with only one requeue
 			if len(ipAddresses) == 0 {
+				machineScope.Logger.Info("waiting for IPAddress allocation", "device", net.Name, "pool", ipPool.Name, "offset", i)
 				requeue = true
 				continue
 			}

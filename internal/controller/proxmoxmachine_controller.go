@@ -279,9 +279,14 @@ const (
 func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Context, machineScope *scope.MachineScope) (ctrl.Result, error) {
 	pm := machineScope.ProxmoxMachine
 	if len(pm.Spec.PCIDeviceRequests) == 0 {
+		if len(pm.Status.PCIDeviceAllocations) > 0 {
+			machineScope.Logger.Info("clearing PCI device allocations; no PCI device requests are configured", "allocationCount", len(pm.Status.PCIDeviceAllocations))
+		}
 		pm.Status.PCIDeviceAllocations = nil
 		return ctrl.Result{}, nil
 	}
+
+	machineScope.Logger.Info("reconciling PCI device requests", "requestCount", len(pm.Spec.PCIDeviceRequests))
 
 	clusterName := machineScope.Cluster.Name
 	desired := map[string]struct{}{}
@@ -298,6 +303,7 @@ func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Contex
 	if preferredNode == "" {
 		req0 := pm.Spec.PCIDeviceRequests[0]
 		placementName := claimNameFor(pm.Name, req0.Name, 0)
+		machineScope.Logger.Info("creating or updating placement PCI device claim", "claim", placementName, "request", req0.Name)
 
 		placement := &infrav1alpha1.ProxmoxPCIDeviceClaim{}
 		placement.Namespace = pm.Namespace
@@ -332,6 +338,7 @@ func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Contex
 			return ctrl.Result{}, err
 		}
 		if placement.Status.BoundMappingID == "" || placement.Status.Phase != infrav1alpha1.ProxmoxPCIDeviceClaimPhaseBound {
+			machineScope.Logger.Info("waiting for placement PCI device claim to bind", "claim", placementName, "phase", placement.Status.Phase, "mapping", placement.Status.BoundMappingID)
 			setProxmoxMachinePCIWaiting(pm, fmt.Sprintf("waiting for PCI device claim %s to bind", placementName))
 			return ctrl.Result{RequeueAfter: infrav1.DefaultReconcilerRequeue}, nil
 		}
@@ -341,7 +348,7 @@ func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Contex
 		}
 		nodeCopy := preferredNode
 		pm.Status.ProxmoxNode = &nodeCopy
-		machineScope.Logger.Info("adopted Proxmox node from PCI placement", "node", preferredNode)
+		machineScope.Logger.Info("adopted Proxmox node from PCI placement", "claim", placementName, "mapping", placement.Status.BoundMappingID, "node", preferredNode)
 	}
 
 	// Create or update desired claims.
@@ -353,6 +360,7 @@ func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Contex
 		for i := int32(0); i < count; i++ {
 			claimName := claimNameFor(pm.Name, req.Name, i)
 			desired[claimName] = struct{}{}
+			machineScope.Logger.Info("ensuring PCI device claim", "claim", claimName, "request", req.Name, "index", i, "preferredNode", preferredNode)
 
 			claim := &infrav1alpha1.ProxmoxPCIDeviceClaim{}
 			claim.Namespace = pm.Namespace
@@ -395,6 +403,7 @@ func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Contex
 		if _, ok := desired[claim.Name]; ok {
 			continue
 		}
+		machineScope.Logger.Info("deleting stale PCI device claim", "claim", claim.Name)
 		if err := r.Delete(ctx, claim); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
@@ -412,6 +421,7 @@ func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Contex
 			claim := &infrav1alpha1.ProxmoxPCIDeviceClaim{}
 			if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: claimName}, claim); err != nil {
 				if apierrors.IsNotFound(err) {
+					machineScope.Logger.Info("waiting for PCI device claim to exist", "claim", claimName)
 					setProxmoxMachinePCIWaiting(pm, fmt.Sprintf("waiting for PCI device claim %s to exist", claimName))
 					return ctrl.Result{RequeueAfter: infrav1.DefaultReconcilerRequeue}, nil
 				}
@@ -419,9 +429,12 @@ func (r *ProxmoxMachineReconciler) reconcilePCIDeviceRequests(ctx context.Contex
 			}
 
 			if claim.Status.BoundMappingID == "" || claim.Status.Phase != infrav1alpha1.ProxmoxPCIDeviceClaimPhaseBound {
+				machineScope.Logger.Info("waiting for PCI device claim to bind", "claim", claimName, "phase", claim.Status.Phase, "mapping", claim.Status.BoundMappingID)
 				setProxmoxMachinePCIWaiting(pm, fmt.Sprintf("waiting for PCI device claim %s to bind", claimName))
 				return ctrl.Result{RequeueAfter: infrav1.DefaultReconcilerRequeue}, nil
 			}
+
+			machineScope.Logger.Info("PCI device claim is bound", "claim", claimName, "request", req.Name, "mapping", claim.Status.BoundMappingID, "node", claim.Status.ProxmoxNode)
 
 			allocations = append(allocations, infrav1.PCIDeviceAllocation{
 				Name:        req.Name,

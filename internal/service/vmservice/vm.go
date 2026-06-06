@@ -76,7 +76,7 @@ func ReconcileVM(ctx context.Context, scope *scope.MachineScope) (infrav1.Virtua
 	if inFlight, err := taskservice.ReconcileInFlightTask(ctx, scope); err != nil || inFlight {
 		return vm, err
 	}
-	scope.Logger.V(4).Info("proxmox machine state", "state", conditions.GetReason(scope.ProxmoxMachine, infrav1.ProxmoxMachineVirtualMachineProvisionedCondition))
+	scope.Logger.V(4).Info("proxmox machine state", "machineName", scope.ProxmoxMachine.GetName(), "state", conditions.GetReason(scope.ProxmoxMachine, infrav1.ProxmoxMachineVirtualMachineProvisionedCondition), "vmid", scope.ProxmoxMachine.GetVirtualMachineID())
 
 	// TODO: This requires a proper state machine. We're reusing
 	// the condition reasons in VirtualMachineProvisioned as a state machine
@@ -979,6 +979,7 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 
 	if scope.ProxmoxMachine.Status.ProxmoxNode != nil && strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode) != "" {
 		options.Target = strings.TrimSpace(*scope.ProxmoxMachine.Status.ProxmoxNode)
+		scope.Logger.Info("using Proxmox node selected by PCI placement", "target", options.Target)
 	}
 
 	if options.Target == "" && (len(scope.InfraCluster.ProxmoxCluster.Spec.AllowedNodes) > 0 || len(scope.ProxmoxMachine.Spec.AllowedNodes) > 0) {
@@ -995,6 +996,7 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 			}
 			return proxmox.VMCloneResponse{}, err
 		}
+		scope.Logger.Info("using Proxmox node selected by VM scheduler", "target", options.Target)
 	}
 
 	templateID := scope.ProxmoxMachine.GetTemplateID()
@@ -1003,6 +1005,9 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 		templateSelectorTags := scope.ProxmoxMachine.GetTemplateSelectorTags()
 		templateMatchPolicy := string(scope.ProxmoxMachine.GetTemplateMatchPolicy())
 		options.Node, templateID, err = scope.InfraCluster.ProxmoxClient.FindVMTemplateByTags(ctx, templateSelectorTags, templateMatchPolicy, options.Target)
+		if err == nil {
+			scope.Logger.Info("selected VM template", "templateID", templateID, "templateNode", options.Node, "target", options.Target, "templateTags", templateSelectorTags, "matchPolicy", templateMatchPolicy)
+		}
 
 		if err != nil {
 			if errors.Is(err, goproxmox.ErrTemplateNotFound) {
@@ -1034,14 +1039,21 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 			return proxmox.VMCloneResponse{}, err
 		}
 		options.Storage = bootStorage
+		scope.Logger.Info("selected VM boot storage", "node", node, "storage", options.Storage)
 	}
 
+	scope.Logger.Info("cloning VM", "templateID", templateID, "sourceNode", options.Node, "targetNode", node, "storage", options.Storage, "newID", options.NewID)
 	res, err := scope.InfraCluster.ProxmoxClient.CloneVM(ctx, int(templateID), options)
 	if err != nil {
 		return res, err
 	}
 
 	scope.ProxmoxMachine.Status.ProxmoxNode = ptr.To(node)
+	taskUPID := ""
+	if res.Task != nil {
+		taskUPID = string(res.Task.UPID)
+	}
+	scope.Logger.Info("VM clone requested", "targetNode", node, "newID", options.NewID, "task", taskUPID)
 
 	// if the creation was successful, we store the information about the node in the
 	// cluster status

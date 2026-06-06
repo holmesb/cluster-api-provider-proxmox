@@ -121,8 +121,10 @@ spec:
                   env:
                   - name: cp_enable
                     value: "true"
+                  {{- if .cloneSpec.virtualIPNetworkInterface }}
                   - name: vip_interface
                     value: "{{ .cloneSpec.virtualIPNetworkInterface }}"
+                  {{- end }}
                   - name: address
                     value: "{{ .controlPlaneEndpoint.host }}"
                   - name: port
@@ -137,7 +139,7 @@ spec:
                     value: "10"
                   - name: vip_retryperiod
                     value: "2"
-                  image: ghcr.io/kube-vip/kube-vip:v0.5.11
+                  image: ghcr.io/kube-vip/kube-vip:v0.8.9
                   imagePullPolicy: IfNotPresent
                   name: kube-vip
                   resources: {}
@@ -288,6 +290,7 @@ spec:
             machineDeploymentClass:
               names:
               - proxmox-worker
+              - proxmox-worker-gpu
     description: Configure Worker TemplateID
     name: TemplateID-Worker
   - enabledIf: '{{ if (index .cloneSpec.machineSpec 1).templateSelector }}true{{ end }}'
@@ -305,6 +308,7 @@ spec:
             machineDeploymentClass:
               names:
               - proxmox-worker
+              - proxmox-worker-gpu
     description: Configure Worker TemplateSelector
     name: TemplateSelector-Worker
   - enabledIf: '{{ if (index .cloneSpec.machineSpec 2).templateID }}true{{ end }}'
@@ -395,8 +399,7 @@ spec:
             names:
             - proxmox-loadbalancer
     description: Configure LoadBalancerNode Sockets
-    enabledIf: '{{ if (index .cloneSpec.machineSpec 2).numSockets }}true{{ end
-      }}'
+    enabledIf: '{{ if (index .cloneSpec.machineSpec 2).numSockets }}true{{ end }}'
     name: LoadBalancerSockets
   - definitions:
     - jsonPatches:
@@ -1511,6 +1514,7 @@ spec:
             type: array
           virtualIPNetworkInterface:
             type: string
+            default: ""
         type: object
   workers:
     machineDeployments:
