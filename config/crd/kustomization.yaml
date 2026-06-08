@@ -6,6 +6,7 @@ resources:
 - bases/infrastructure.cluster.x-k8s.io_proxmoxclustertemplates.yaml
 - bases/infrastructure.cluster.x-k8s.io_proxmoxmachines.yaml
 - bases/infrastructure.cluster.x-k8s.io_proxmoxmachinetemplates.yaml
+- bases/infrastructure.cluster.x-k8s.io_proxmoxpcideviceclaims.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 commonLabels:
