@@ -644,55 +644,55 @@ spec:
       - op: add
         path: /spec/template/spec/disks
         value: {}
-    - name: controlplane-boot-volume
-      description: Set control-plane boot disk size from cloneSpec.
-      enabledIf: "{{ if (index .cloneSpec.machineSpec 0).disks.bootVolume }}true{{ end }}"
-      definitions:
-        - selector:
-            apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-            kind: ProxmoxMachineTemplate
-            matchResources:
-              controlPlane: true
-          jsonPatches:
-            - op: add
-              path: /spec/template/spec/disks/bootVolume
-              valueFrom:
-                variable: cloneSpec.machineSpec[0].disks.bootVolume
-    - name: worker-boot-volume
-      description: Set worker boot disk size from cloneSpec.
-      enabledIf: "{{ if (index .cloneSpec.machineSpec 1).disks.bootVolume }}true{{ end }}"
-      definitions:
-        - selector:
-            apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-            kind: ProxmoxMachineTemplate
-            matchResources:
-              controlPlane: false
-              machineDeploymentClass:
-                names:
-                  - proxmox-worker
-                  - proxmox-worker-gpu
-          jsonPatches:
-            - op: add
-              path: /spec/template/spec/disks/bootVolume
-              valueFrom:
-                variable: cloneSpec.machineSpec[1].disks.bootVolume
-    - name: loadbalancer-boot-volume
-      description: Set load-balancer boot disk size from cloneSpec.
-      enabledIf: "{{ if (index .cloneSpec.machineSpec 2).disks.bootVolume }}true{{ end }}"
-      definitions:
-        - selector:
-            apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-            kind: ProxmoxMachineTemplate
-            matchResources:
-              controlPlane: false
-              machineDeploymentClass:
-                names:
-                  - proxmox-loadbalancer
-          jsonPatches:
-            - op: add
-              path: /spec/template/spec/disks/bootVolume
-              valueFrom:
-                variable: cloneSpec.machineSpec[2].disks.bootVolume
+  - name: controlplane-boot-volume
+    description: Set control-plane boot disk size from cloneSpec.
+    enabledIf: "{{ if (index .cloneSpec.machineSpec 0).disks.bootVolume }}true{{ end }}"
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: true
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/disks/bootVolume
+            valueFrom:
+              variable: cloneSpec.machineSpec[0].disks.bootVolume
+  - name: worker-boot-volume
+    description: Set worker boot disk size from cloneSpec.
+    enabledIf: "{{ if (index .cloneSpec.machineSpec 1).disks.bootVolume }}true{{ end }}"
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: false
+            machineDeploymentClass:
+              names:
+                - proxmox-worker
+                - proxmox-worker-gpu
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/disks/bootVolume
+            valueFrom:
+              variable: cloneSpec.machineSpec[1].disks.bootVolume
+  - name: loadbalancer-boot-volume
+    description: Set load-balancer boot disk size from cloneSpec.
+    enabledIf: "{{ if (index .cloneSpec.machineSpec 2).disks.bootVolume }}true{{ end }}"
+    definitions:
+      - selector:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+          kind: ProxmoxMachineTemplate
+          matchResources:
+            controlPlane: false
+            machineDeploymentClass:
+              names:
+                - proxmox-loadbalancer
+        jsonPatches:
+          - op: add
+            path: /spec/template/spec/disks/bootVolume
+            valueFrom:
+              variable: cloneSpec.machineSpec[2].disks.bootVolume
   - name: worker-additional-volumes
     description: Add additional disks to workers via variable.
     enabledIf: '{{ if .workerAdditionalVolumes }}true{{ end }}'
