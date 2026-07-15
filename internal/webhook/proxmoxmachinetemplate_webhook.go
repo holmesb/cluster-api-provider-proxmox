@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"sigs.k8s.io/cluster-api/util/topology"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -69,7 +70,7 @@ func (p *ProxmoxMachineTemplate) ValidateCreate(_ context.Context, obj runtime.O
 }
 
 // ValidateUpdate implements the update validation function.
-func (p *ProxmoxMachineTemplate) ValidateUpdate(_ context.Context, old, newObj runtime.Object) (warnings admission.Warnings, err error) {
+func (p *ProxmoxMachineTemplate) ValidateUpdate(ctx context.Context, old, newObj runtime.Object) (warnings admission.Warnings, err error) {
 	var allErrs field.ErrorList
 
 	oldMachineTemplate, ok := old.(*infrav1.ProxmoxMachineTemplate)
@@ -82,7 +83,12 @@ func (p *ProxmoxMachineTemplate) ValidateUpdate(_ context.Context, old, newObj r
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected an ProxmoxMachineTemplate new object but got a %T", newObj))
 	}
 
-	if !reflect.DeepEqual(newMachineTemplate.Spec, oldMachineTemplate.Spec) {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected an admission.Request inside context: %v", err))
+	}
+
+	if !topology.IsDryRunRequest(req, newMachineTemplate) && !reflect.DeepEqual(newMachineTemplate.Spec, oldMachineTemplate.Spec) {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec"), "ProxmoxMachineTemplate is immutable"))
 	}
 
