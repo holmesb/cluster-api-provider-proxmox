@@ -340,7 +340,10 @@ func ensureVirtualMachine(ctx context.Context, machineScope *scope.MachineScope)
 			// we always want to trigger reconciliation at this point.
 			return false, err
 		case errors.Is(err, ErrVMNotInitialized):
-			return true, err
+			// Proxmox can briefly report a cloned VM before its name is updated (see
+			// updateVMLocation). This is expected and self-resolving, so requeue without
+			// surfacing it as a reconcile error:
+			return true, taskservice.NewRequeueError(err.Error(), infrav1.DefaultReconcilerRequeue)
 		case !errors.Is(err, ErrVMNotCreated):
 			return false, err
 		}
