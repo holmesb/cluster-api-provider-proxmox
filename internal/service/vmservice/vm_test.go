@@ -31,6 +31,7 @@ import (
 
 	infrav1 "github.com/ionos-cloud/cluster-api-provider-proxmox/api/v1alpha2"
 	"github.com/ionos-cloud/cluster-api-provider-proxmox/internal/service/scheduler"
+	"github.com/ionos-cloud/cluster-api-provider-proxmox/internal/service/taskservice"
 	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/proxmox"
 	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/proxmox/goproxmox"
 	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/scope"
@@ -144,6 +145,30 @@ func TestEnsureVirtualMachine_CreateVM_FullOptions(t *testing.T) {
 	require.Equal(t, "node2", *machineScope.ProxmoxMachine.Status.ProxmoxNode)
 	require.True(t, machineScope.InfraCluster.ProxmoxCluster.HasMachine(machineScope.Name(), false))
 	requireConditionIsFalse(t, machineScope.ProxmoxMachine, infrav1.ProxmoxMachineVirtualMachineProvisionedCondition)
+}
+
+func TestEnsureVirtualMachine_NotInitialized_RequeuesWithoutReconcileError(t *testing.T) {
+	ctx := context.Background()
+	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
+	vm := newRunningVM()
+	vm.Name = "bar"
+	machineScope.ProxmoxMachine.Spec.VirtualMachineID = ptr.To(int64(vm.VMID))
+	machineScope.ProxmoxMachine.Status.ProxmoxNode = ptr.To("node2")
+
+	proxmoxClient.EXPECT().GetVM(ctx, "node2", int64(123)).Return(vm, nil).Once()
+
+	requeue, err := ensureVirtualMachine(ctx, machineScope)
+	require.True(t, requeue)
+	require.Error(t, err)
+
+	// A VM found under the wrong name is a brief, self-resolving clone lag (see
+	// ErrVMNotInitialized in find.go), not a genuine reconcile failure, so it must come
+	// back as a RequeueError rather than the bare sentinel error - the controller only
+	// suppresses reconcile-error logging/metrics for RequeueError.
+	var requeueErr *taskservice.RequeueError
+	require.ErrorAs(t, err, &requeueErr)
+	require.Equal(t, infrav1.DefaultReconcilerRequeue, requeueErr.RequeueAfter())
+	require.NotErrorIs(t, err, ErrVMNotInitialized)
 }
 
 func TestEnsureVirtualMachine_CreateVM_FullOptions_TemplateSelector(t *testing.T) {
