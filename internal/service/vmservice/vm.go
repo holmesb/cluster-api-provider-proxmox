@@ -837,11 +837,13 @@ func selectNodeStorages(ctx context.Context, machineScope *scope.MachineScope, n
 		return "", "", err
 	}
 
+	// effectiveFree is deliberately based on physical free space (s.Avail), not nominal/virtual
+	// commitment (s.VirtualAvail). Thin-provisioned overcommit is an accepted trade-off here: we'd
+	// rather let a VM clone proceed onto a pool that already has more nominal disk promised than it
+	// has capacity for, and rely on real disk usage monitoring to catch actual exhaustion, than
+	// refuse provisioning while the pool still has plenty of physical room. See warnOnNominalOvercommit.
 	effectiveFree := func(s proxmox.StorageStatus) uint64 {
 		base := s.Avail
-		if s.VirtualAvail > 0 {
-			base = s.VirtualAvail
-		}
 		if reservedBytes, ok := reserved[s.Name]; ok {
 			if reservedBytes >= base {
 				return 0
@@ -894,6 +896,26 @@ func selectNodeStorages(ctx context.Context, machineScope *scope.MachineScope, n
 		}
 	}
 
+	// warnOnNominalOvercommit logs, but never blocks on, a pick whose nominal/virtual disk commitment
+	// would exceed the pool's nominal capacity once sizeBytes lands on it. We accept this risk fleet-wide
+	// and only want visibility here, not a provisioning failure.
+	warnOnNominalOvercommit := func(s proxmox.StorageStatus, sizeBytes uint64, purpose string) {
+		if sizeBytes == 0 || s.Total == 0 {
+			return
+		}
+		projected := s.VirtualAllocated + sizeBytes
+		if projected > s.Total {
+			logger.Info("nominal storage overcommit: pool's promised disk capacity will exceed its total size; physical usage may still be low, see PVE VM Storage High alert",
+				"storage", s.Name,
+				"purpose", purpose,
+				"totalBytes", s.Total,
+				"virtualAllocatedBytes", s.VirtualAllocated,
+				"requestedBytes", sizeBytes,
+				"projectedVirtualAllocatedBytes", projected,
+			)
+		}
+	}
+
 	bootCandidates := slices.Clone(candidates)
 	additionalCandidates := slices.Clone(candidates)
 
@@ -930,6 +952,9 @@ func selectNodeStorages(ctx context.Context, machineScope *scope.MachineScope, n
 
 	bootStorage = bootCandidates[0].Name
 	additionalStorage = additionalCandidates[0].Name
+
+	warnOnNominalOvercommit(bootCandidates[0], bootSizeBytes, "boot disk")
+	warnOnNominalOvercommit(additionalCandidates[0], largestAdditionalSizeBytes, "additional volumes")
 
 	logger.Info("selected node storages", "bootStorage", bootStorage, "additionalStorage", additionalStorage)
 	return bootStorage, additionalStorage, nil
