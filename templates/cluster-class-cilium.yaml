@@ -4,6 +4,10 @@ metadata:
   name: proxmox-clusterclass-cilium-v0.2.1
 spec:
   controlPlane:
+    deletion:
+      # CAPI deletes the Node through the control-plane VIP once the VM is gone. If that VM held the VIP,
+      # kube-vip moves it only after its 15s lease expires, past the 10s default, and the Node is left behind.
+      nodeDeletionTimeoutSeconds: 60
     healthCheck:
       checks:
         nodeStartupTimeoutSeconds: 900
