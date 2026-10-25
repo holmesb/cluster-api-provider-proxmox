@@ -829,6 +829,44 @@ spec:
         path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs
         valueFrom:
           variable: apiServerExtraArgs
+  # Must follow apiserver-extraargs, which replaces the extraArgs list this appends to.
+  - name: apiserver-token-auth-file
+    description: >-
+      Authenticate users by static bearer token (kube-apiserver --token-auth-file). The whole CSV comes from a
+      Secret in the Cluster's namespace on the management cluster, so tokens survive rebuilding the cluster.
+      The API server reads it only at start, so a change needs a control-plane rollout.
+    enabledIf: '{{ if .apiServerTokenAuthFile }}true{{ end }}'
+    definitions:
+    - selector:
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+        kind: KubeadmControlPlaneTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/files/-
+        valueFrom:
+          template: |
+            path: /etc/kubernetes/static-token/tokens.csv
+            owner: root:root
+            permissions: "0600"
+            contentFrom:
+              secret:
+                name: {{ .apiServerTokenAuthFile.secretName }}
+                key: {{ .apiServerTokenAuthFile.secretKey }}
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
+        value:
+          name: token-auth-file
+          value: /etc/kubernetes/static-token/tokens.csv
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraVolumes
+        value:
+        - name: static-token
+          hostPath: /etc/kubernetes/static-token
+          mountPath: /etc/kubernetes/static-token
+          readOnly: true
+          pathType: DirectoryOrCreate
   - name: controllermanager-extraargs
     enabledIf: '{{ if .controllerManagerExtraArgs }}true{{ end }}'
     definitions:
@@ -1064,6 +1102,19 @@ spec:
               type: string
             value:
               type: string
+  - name: apiServerTokenAuthFile
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: object
+        required: [secretName, secretKey]
+        properties:
+          secretName:
+            description: Secret in the Cluster's namespace on the management cluster.
+            type: string
+          secretKey:
+            description: Key holding the CSV, one 'token,user,uid,"group1,group2"' line per user.
+            type: string
   - name: nodesVlanId
     required: false
     schema:
