@@ -528,6 +528,59 @@ func (s *IPAMTestSuite) Test_GetIPAddress() {
 	s.Equal(ip.Spec.Address, "10.10.10.11")
 }
 
+func (s *IPAMTestSuite) Test_GetIPAddressByPool_WithoutTypeMeta() {
+	s.cl = fake.NewClientBuilder().WithScheme(s.cl.Scheme()).
+		WithIndex(&ipamv1.IPAddress{}, "spec.poolRef.name", func(obj client.Object) []string {
+			return []string{obj.(*ipamv1.IPAddress).Spec.PoolRef.Name}
+		}).Build()
+	s.helper = NewHelper(s.cl, s.cluster)
+	poolName := "test-pool"
+	for _, test := range []struct {
+		name, group, kind string
+	}{
+		{"bare-group", GetIPAMInClusterAPIVersion(), GetInClusterIPPoolKind()},
+		{"group-version", *GetIPAMInClusterAPIGroup(), GetInClusterIPPoolKind()},
+		{"other-group", "other.example.io", GetInClusterIPPoolKind()},
+		{"other-kind", GetIPAMInClusterAPIVersion(), GetGlobalInClusterIPPoolKind()},
+	} {
+		s.NoError(s.cl.Create(s.ctx, &ipamv1.IPAddress{
+			ObjectMeta: metav1.ObjectMeta{Name: test.name, Namespace: "test"},
+			Spec: ipamv1.IPAddressSpec{
+				PoolRef: ipamv1.IPPoolReference{APIGroup: test.group, Kind: test.kind, Name: poolName},
+			},
+		}))
+	}
+
+	addresses, err := s.helper.GetIPAddressByPool(s.ctx, corev1.TypedLocalObjectReference{
+		APIGroup: GetIPAMInClusterAPIGroup(), Kind: GetInClusterIPPoolKind(), Name: poolName,
+	})
+	s.NoError(err)
+	s.Len(addresses, 2)
+	s.Equal("bare-group", addresses[0].Name)
+	s.Equal("group-version", addresses[1].Name)
+}
+
+func (s *IPAMTestSuite) Test_GetInClusterPools_WithoutTypeMeta() {
+	pool := &ipamicv1.InClusterIPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "zone-pool", Namespace: "test"},
+		Spec:       ipamicv1.InClusterIPPoolSpec{Addresses: []string{"192.0.2.1-192.0.2.100"}, Prefix: 24},
+	}
+	s.NoError(s.cl.Create(s.ctx, pool))
+	s.cluster.Status.InClusterZoneRef = []infrav1.InClusterZoneRef{{
+		Zone: ptr.To("default"), InClusterIPPoolRefV4: &corev1.LocalObjectReference{Name: pool.Name},
+	}}
+	machine := &infrav1.ProxmoxMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-machine", Namespace: "test"},
+		Spec:       infrav1.ProxmoxMachineSpec{Network: &infrav1.NetworkSpec{}},
+	}
+
+	pools, err := s.helper.GetInClusterPools(s.ctx, machine)
+	s.NoError(err)
+	s.NotNil(pools.IPv4)
+	s.Equal(GetInClusterIPPoolKind(), pools.IPv4.PoolRef.Kind)
+	s.Equal(pool.Name, pools.IPv4.PoolRef.Name)
+}
+
 func getCluster() *infrav1.ProxmoxCluster {
 	return &infrav1.ProxmoxCluster{
 		TypeMeta: metav1.TypeMeta{

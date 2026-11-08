@@ -208,7 +208,7 @@ func (h *Helper) GetInClusterPools(ctx context.Context, moxm *infrav1.ProxmoxMac
 		poolSpec.PoolRef = corev1.TypedLocalObjectReference{
 			APIGroup: ptr.To(ipamicv1.GroupVersion.String()),
 			Name:     pool.Name,
-			Kind:     pool.TypeMeta.Kind,
+			Kind:     GetInClusterIPPoolKind(),
 		}
 		pools.IPv4 = &poolSpec
 	}
@@ -231,7 +231,7 @@ func (h *Helper) GetInClusterPools(ctx context.Context, moxm *infrav1.ProxmoxMac
 		poolSpec.PoolRef = corev1.TypedLocalObjectReference{
 			APIGroup: ptr.To(ipamicv1.GroupVersion.String()),
 			Name:     pool.Name,
-			Kind:     pool.TypeMeta.Kind,
+			Kind:     GetInClusterIPPoolKind(),
 		}
 		pools.IPv6 = &poolSpec
 	}
@@ -588,9 +588,8 @@ func (h *Helper) GetIPAddressByPool(ctx context.Context, poolRef corev1.TypedLoc
 	}
 
 	addresses.Items = slices.DeleteFunc(addresses.Items, func(n ipamv1.IPAddress) bool {
-		// Check if we are actually dealing with the right resource kind.
-		groupVersion, _ := schema.ParseGroupVersion(n.APIVersion)
-		return groupVersion.Group != GetIPAMInClusterAPIVersion()
+		// Typed clients can clear TypeMeta; spec.poolRef carries the pool identity.
+		return !matchesPoolRef(n, poolRef)
 	})
 
 	// Sort result by IPAddress.Name to provide stability to testing.
@@ -599,6 +598,36 @@ func (h *Helper) GetIPAddressByPool(ctx context.Context, poolRef corev1.TypedLoc
 	})
 
 	return addresses.Items, nil
+}
+
+func matchesPoolRef(address ipamv1.IPAddress, poolRef corev1.TypedLocalObjectReference) bool {
+	// Do not use IPAddress TypeMeta/APIVersion here: typed client/cache list results may not
+	// carry TypeMeta on individual items, while the canonical pool identity is in spec.poolRef.
+	return poolRefFieldsMatch(address.Spec.PoolRef.Name, address.Spec.PoolRef.APIGroup, address.Spec.PoolRef.Kind, poolRef)
+}
+
+func poolRefFieldsMatch(name, group, kind string, poolRef corev1.TypedLocalObjectReference) bool {
+	if name != poolRef.Name {
+		return false
+	}
+	if expectedGroup := normalizedAPIGroup(ptr.Deref(poolRef.APIGroup, "")); expectedGroup != "" && normalizedAPIGroup(group) != expectedGroup {
+		return false
+	}
+	if poolRef.Kind != "" && kind != poolRef.Kind {
+		return false
+	}
+	return true
+}
+
+func normalizedAPIGroup(apiGroupOrVersion string) string {
+	groupVersion, err := schema.ParseGroupVersion(apiGroupOrVersion)
+	if err == nil && groupVersion.Group != "" {
+		return groupVersion.Group
+	}
+	// schema.ParseGroupVersion sets Group="" for strings without a "/" (treating
+	// the whole input as Version), so bare group-only strings fall through here
+	// and are returned as-is — which is the correct identity for them.
+	return apiGroupOrVersion
 }
 
 func gvkForObject(obj runtime.Object, scheme *runtime.Scheme) (schema.GroupVersionKind, error) {

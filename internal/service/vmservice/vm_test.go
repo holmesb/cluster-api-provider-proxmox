@@ -128,7 +128,7 @@ func TestEnsureVirtualMachine_CreateVM_FullOptions(t *testing.T) {
 		Name:        "test",
 		Description: "test vm",
 		Format:      "raw",
-		Full:        1,
+		Full:        true,
 		Pool:        "pool",
 		SnapName:    "snap",
 		Storage:     "storage",
@@ -195,7 +195,7 @@ func TestEnsureVirtualMachine_CreateVM_FullOptions_TemplateSelector(t *testing.T
 		Name:        "test",
 		Description: "test vm",
 		Format:      "raw",
-		Full:        1,
+		Full:        true,
 		Pool:        "pool",
 		SnapName:    "snap",
 		Storage:     "storage",
@@ -268,7 +268,7 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode(t *testing.T) {
 	storage := "local-lvm"
 	machineScope.ProxmoxMachine.Spec.Storage = &storage
 
-	expectedOptions := proxmox.VMCloneRequest{Node: "node1", Name: "test", Target: "node3", Full: 1, Storage: storage}
+	expectedOptions := proxmox.VMCloneRequest{Node: "node1", Name: "test", Target: "node3", Full: true, Storage: storage}
 	response := proxmox.VMCloneResponse{NewID: 123, Task: newTask()}
 	proxmoxClient.EXPECT().CloneVM(context.Background(), 123, expectedOptions).Return(response, nil).Once()
 
@@ -294,7 +294,7 @@ func TestEnsureVirtualMachine_CreateVM_SelectNode_MachineAllowedNodes(t *testing
 	storage := "local-lvm"
 	machineScope.ProxmoxMachine.Spec.Storage = &storage
 
-	expectedOptions := proxmox.VMCloneRequest{Node: "node1", Name: "test", Target: "node2", Full: 1, Storage: storage}
+	expectedOptions := proxmox.VMCloneRequest{Node: "node1", Name: "test", Target: "node2", Full: true, Storage: storage}
 	response := proxmox.VMCloneResponse{NewID: 123, Task: newTask()}
 	proxmoxClient.EXPECT().CloneVM(context.Background(), 123, expectedOptions).Return(response, nil).Once()
 
@@ -334,7 +334,7 @@ func TestEnsureVirtualMachine_CreateVM_VMIDRange(t *testing.T) {
 	storage := "local-lvm"
 	machineScope.ProxmoxMachine.Spec.Storage = &storage
 
-	expectedOptions := proxmox.VMCloneRequest{Node: "node1", NewID: 1001, Name: "test", Full: 1, Storage: storage}
+	expectedOptions := proxmox.VMCloneRequest{Node: "node1", NewID: 1001, Name: "test", Full: true, Storage: storage}
 	response := proxmox.VMCloneResponse{Task: newTask(), NewID: int64(1001)}
 	proxmoxClient.Mock.On("CheckID", context.Background(), int64(1000)).Return(false, nil)
 	proxmoxClient.Mock.On("CheckID", context.Background(), int64(1001)).Return(true, nil)
@@ -416,7 +416,7 @@ func TestEnsureVirtualMachine_CreateVM_VMIDRangeCheckExisting(t *testing.T) {
 	storage := "local-lvm"
 	machineScope.ProxmoxMachine.Spec.Storage = &storage
 
-	expectedOptions := proxmox.VMCloneRequest{Node: "node1", NewID: 1002, Name: "test", Full: 1, Storage: storage}
+	expectedOptions := proxmox.VMCloneRequest{Node: "node1", NewID: 1002, Name: "test", Full: true, Storage: storage}
 	response := proxmox.VMCloneResponse{Task: newTask(), NewID: int64(1002)}
 	proxmoxClient.EXPECT().CloneVM(context.Background(), 123, expectedOptions).Return(response, nil).Once()
 	proxmoxClient.Mock.On("CheckID", context.Background(), int64(1001)).Return(false, nil).Once()
@@ -729,7 +729,7 @@ func TestReconcileDisks_UnmountCloudInitISO(t *testing.T) {
 	machineScope, proxmoxClient, _ := setupReconcilerTestWithCondition(t, infrav1.ProxmoxMachineVirtualMachineProvisionedWaitingForBootstrapReadyReason)
 
 	vm := newRunningVM()
-	vm.VirtualMachineConfig.IDE0 = "local:iso/cloud-init.iso,media=cdrom"
+	vm.VirtualMachineConfig.IDEs = map[string]string{"ide0": "local:iso/cloud-init.iso,media=cdrom"}
 	machineScope.SetVirtualMachine(vm)
 
 	proxmoxClient.EXPECT().UnmountCloudInitISO(context.Background(), vm, "ide0").Return(nil)
@@ -835,7 +835,7 @@ func TestReconcileVM_CloudInitRunning(t *testing.T) {
 func TestReconcileVM_StateMachine(t *testing.T) {
 	machineScope, proxmoxClient, _ := setupReconcilerTest(t)
 	vm := newStoppedVM()
-	vm.VirtualMachineConfig.IDE0 = "local:iso/cloud-init.iso,media=cdrom"
+	vm.VirtualMachineConfig.IDEs = map[string]string{"ide0": "local:iso/cloud-init.iso,media=cdrom"}
 
 	machineScope.InfraCluster.ProxmoxCluster.Spec.IPv6Config = &infrav1.IPConfigSpec{
 		Addresses: []string{"2001:db8::/64"},
@@ -870,7 +870,7 @@ func TestReconcileVM_StateMachine(t *testing.T) {
 		Name:        "test",
 		Description: "test vm",
 		Format:      "raw",
-		Full:        1,
+		Full:        true,
 		Pool:        "pool",
 		SnapName:    "snap",
 		Storage:     "storage",

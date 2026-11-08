@@ -23,11 +23,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"slices"
 	"sort"
 	"strings"
 
+	lutherproxmox "github.com/luthermonson/go-proxmox"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -146,30 +146,11 @@ func proxmoxMachineHasVMProvisionFailedReason(scope *scope.MachineScope) bool {
 		reason == infrav1.ProxmoxMachineVirtualMachineProvisionedTaskFailedReason
 }
 
-func hostPCISlotValue(cfg any, index int) string {
+func hostPCISlotValue(cfg *lutherproxmox.VirtualMachineConfig, index int) string {
 	if cfg == nil || index < 0 {
 		return ""
 	}
-	cfgValue := reflect.ValueOf(cfg)
-	if cfgValue.Kind() == reflect.Pointer {
-		cfgValue = cfgValue.Elem()
-	}
-	if !cfgValue.IsValid() {
-		return ""
-	}
-	// Field names depend on the Proxmox client struct. Try the common variants.
-	candidates := []string{
-		fmt.Sprintf("Hostpci%d", index),
-		fmt.Sprintf("HostPCI%d", index),
-	}
-	for _, fieldName := range candidates {
-		fieldValue := cfgValue.FieldByName(fieldName)
-		if !fieldValue.IsValid() || fieldValue.Kind() != reflect.String {
-			continue
-		}
-		return strings.TrimSpace(fieldValue.String())
-	}
-	return ""
+	return strings.TrimSpace(cfg.HostPCIs[fmt.Sprintf("hostpci%d", index)])
 }
 
 func desiredHostPCISpecOptions(pciDevices []infrav1.PCIDeviceSpec) []proxmox.VirtualMachineOption {
@@ -232,40 +213,27 @@ func boolToInt(value bool) int {
 }
 
 // diskSlotOccupied reports whether a VM disk slot, for example "scsi1", is already set in the VM config.
-func diskSlotOccupied(cfg any, slot string) bool {
+func diskSlotOccupied(cfg *lutherproxmox.VirtualMachineConfig, slot string) bool {
 	if cfg == nil || slot == "" {
 		return false
 	}
 
 	slot = strings.TrimSpace(strings.ToLower(slot))
-	var fieldName string
+	var devices map[string]string
 	switch {
 	case strings.HasPrefix(slot, "scsi"):
-		fieldName = "SCSI" + slot[4:]
+		devices = cfg.SCSIs
 	case strings.HasPrefix(slot, "sata"):
-		fieldName = "SATA" + slot[4:]
+		devices = cfg.SATAs
 	case strings.HasPrefix(slot, "ide"):
-		fieldName = "IDE" + slot[3:]
+		devices = cfg.IDEs
 	case strings.HasPrefix(slot, "virtio"):
-		fieldName = "VirtIO" + slot[6:]
+		devices = cfg.VirtIOs
 	default:
 		// Unknown bus: assume occupied to avoid creating junk config keys.
 		return true
 	}
-
-	cfgValue := reflect.ValueOf(cfg)
-	if cfgValue.Kind() == reflect.Pointer {
-		cfgValue = cfgValue.Elem()
-	}
-	if !cfgValue.IsValid() {
-		return false
-	}
-
-	fieldValue := cfgValue.FieldByName(fieldName)
-	if !fieldValue.IsValid() || fieldValue.Kind() != reflect.String {
-		return false
-	}
-	return strings.TrimSpace(fieldValue.String()) != ""
+	return strings.TrimSpace(devices[slot]) != ""
 }
 
 func checkCloudInitStatus(ctx context.Context, machineScope *scope.MachineScope) (requeue bool, err error) {
@@ -435,10 +403,10 @@ func reconcileVirtualMachineConfig(ctx context.Context, machineScope *scope.Mach
 	sockets := ptr.Deref(machineScope.ProxmoxMachine.Spec.NumSockets, 0)
 	cores := ptr.Deref(machineScope.ProxmoxMachine.Spec.NumCores, 0)
 	memory := ptr.Deref(machineScope.ProxmoxMachine.Spec.MemoryMiB, 0)
-	if sockets > 0 && vmConfig.Sockets != int(sockets) {
+	if sockets > 0 && ptr.Deref(vmConfig.Sockets, 0) != int(sockets) {
 		vmOptions = append(vmOptions, proxmox.VirtualMachineOption{Name: optionSockets, Value: sockets})
 	}
-	if cores > 0 && vmConfig.Cores != int(cores) {
+	if cores > 0 && ptr.Deref(vmConfig.Cores, 0) != int(cores) {
 		vmOptions = append(vmOptions, proxmox.VirtualMachineOption{Name: optionCores, Value: cores})
 	}
 	if memory > 0 && int(vmConfig.Memory) != int(memory) {
@@ -521,43 +489,30 @@ func reconcileVirtualMachineConfig(ctx context.Context, machineScope *scope.Mach
 	return true, nil
 }
 
-func reconcileAdditionalVolumes(ctx context.Context, machineScope *scope.MachineScope, vmConfig any, vmOptions *[]proxmox.VirtualMachineOption) error {
+func findMatchingUnusedVolume(cfg *lutherproxmox.VirtualMachineConfig, storageName string) string {
+	if cfg == nil || storageName == "" {
+		return ""
+	}
+
+	// Keep selection deterministic when several unused disks share a storage.
+	slots := make([]string, 0, len(cfg.Unuseds))
+	for slot := range cfg.Unuseds {
+		slots = append(slots, slot)
+	}
+	slices.Sort(slots)
+	for _, slot := range slots {
+		volID := strings.TrimSpace(cfg.Unuseds[slot])
+		if volID != "" && strings.HasPrefix(volID, storageName+":") {
+			return volID
+		}
+	}
+	return ""
+}
+
+func reconcileAdditionalVolumes(ctx context.Context, machineScope *scope.MachineScope, vmConfig *lutherproxmox.VirtualMachineConfig, vmOptions *[]proxmox.VirtualMachineOption) error {
 	disksSpec := machineScope.ProxmoxMachine.Spec.Disks
 	if disksSpec == nil || len(disksSpec.AdditionalVolumes) == 0 {
 		return nil
-	}
-
-	findMatchingUnusedVolume := func(cfg any, storageName string) string {
-		if cfg == nil || storageName == "" {
-			return ""
-		}
-
-		cfgValue := reflect.ValueOf(cfg)
-		if cfgValue.Kind() == reflect.Pointer {
-			cfgValue = cfgValue.Elem()
-		}
-		if !cfgValue.IsValid() {
-			return ""
-		}
-
-		cfgType := cfgValue.Type()
-		for i := 0; i < cfgType.NumField(); i++ {
-			fieldMetadata := cfgType.Field(i)
-			if !strings.HasPrefix(fieldMetadata.Name, "Unused") {
-				continue
-			}
-
-			fieldValue := cfgValue.Field(i)
-			if !fieldValue.IsValid() || fieldValue.Kind() != reflect.String {
-				continue
-			}
-
-			volID := strings.TrimSpace(fieldValue.String())
-			if volID != "" && strings.HasPrefix(volID, storageName+":") {
-				return volID
-			}
-		}
-		return ""
 	}
 
 	pendingInReconcile := map[string]struct{}{}
@@ -993,11 +948,7 @@ func createVM(ctx context.Context, scope *scope.MachineScope) (proxmox.VMCloneRe
 	if scope.ProxmoxMachine.Spec.Format != nil {
 		options.Format = string(*scope.ProxmoxMachine.Spec.Format)
 	}
-	var full uint8
-	if ptr.Deref(scope.ProxmoxMachine.Spec.Full, true) {
-		full = 1
-	}
-	options.Full = full
+	options.Full = ptr.Deref(scope.ProxmoxMachine.Spec.Full, true)
 	if scope.ProxmoxMachine.Spec.Pool != nil {
 		options.Pool = *scope.ProxmoxMachine.Spec.Pool
 	}

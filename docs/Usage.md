@@ -111,7 +111,9 @@ the `EXP_CLUSTER_RESOURCE_SET` is required if you want to deploy CNI using clust
 
 Once you have access to a management cluster, you can initialize Cluster API with the following:
 ```
-clusterctl init --infrastructure proxmox --ipam in-cluster --core cluster-api:v1.6.1
+clusterctl init --infrastructure proxmox --ipam in-cluster:v1.1.0 \
+    --core cluster-api:v1.12.11 \
+    --bootstrap kubeadm:v1.12.11 --control-plane kubeadm:v1.12.11
 ```
 
 **Note:** The Proxmox credentials are optional when installing the provider,
@@ -123,7 +125,7 @@ To create a new cluster, you need to generate a cluster manifest.
 ```bash
 $ clusterctl generate cluster proxmox-quickstart \
     --infrastructure proxmox \
-    --kubernetes-version v1.33.3 \
+    --kubernetes-version v1.34.11 \
     --control-plane-machine-count 1 \
     --worker-machine-count 3 > cluster.yaml
 
@@ -235,7 +237,7 @@ Now, you can create a cluster using the cilium flavor:
 ```bash
 $ clusterctl generate cluster proxmox-cilium \
 --infrastructure proxmox \
---kubernetes-version v1.33.3 \
+--kubernetes-version v1.34.11 \
 --control-plane-machine-count 1 \
 --worker-machine-count 3 \
 --flavor cilium > cluster.yaml
@@ -261,7 +263,7 @@ kubectl create cm $FLAVOR_NAME --from-file=data=$CRS_FILE
 ```bash
 $ clusterctl generate cluster proxmox-crs \
 --infrastructure proxmox \
---kubernetes-version v1.33.3 \
+--kubernetes-version v1.34.11 \
 --control-plane-machine-count 1 \
 --worker-machine-count 3 \
 --flavor $FLAVOR_NAME > cluster-crs.yaml
@@ -290,7 +292,7 @@ Then, you can generate a cluster manifest with the following command:
 ```shell
 $ clusterctl generate cluster flatcar-quickstart \
     --infrastructure proxmox \
-    --kubernetes-version v1.33.3 \
+    --kubernetes-version v1.34.11 \
     --control-plane-machine-count 3 \
     --worker-machine-count 3 \
     --flavor flatcar > cluster.yaml
@@ -317,7 +319,7 @@ If you need anything specific that requires a more complex setup, we recommend t
 ```
 $ clusterctl generate custom-cluster proxmox-quickstart \
     --infrastructure proxmox \
-    --kubernetes-version v1.33.3 \
+    --kubernetes-version v1.34.11 \
     --control-plane-machine-count 1 \
     --worker-machine-count 3 \
     --from ~/workspace/custom-cluster-template.yaml > custom-cluster.yaml

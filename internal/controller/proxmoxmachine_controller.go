@@ -228,7 +228,7 @@ func (r *ProxmoxMachineReconciler) reconcileNormal(ctx context.Context, machineS
 	// Ensure requested PCI devices are allocated before creating or updating the VM.
 	if result, err := r.reconcilePCIDeviceRequests(ctx, machineScope); err != nil {
 		return result, err
-	} else if result.Requeue || result.RequeueAfter > 0 {
+	} else if !result.IsZero() {
 		return result, nil
 	}
 
