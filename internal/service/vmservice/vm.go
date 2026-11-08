@@ -286,7 +286,7 @@ func checkCloudInitStatus(ctx context.Context, machineScope *scope.MachineScope)
 			if running {
 				return true, nil
 			}
-			if errors.Is(goproxmox.ErrCloudInitFailed, err) {
+			if errors.Is(err, goproxmox.ErrCloudInitFailed) {
 				conditions.Set(machineScope.ProxmoxMachine, metav1.Condition{
 					Type:    infrav1.ProxmoxMachineVirtualMachineProvisionedCondition,
 					Status:  metav1.ConditionFalse,
@@ -494,6 +494,13 @@ func reconcileVirtualMachineConfig(ctx context.Context, machineScope *scope.Mach
 	}
 
 	if len(vmOptions) == 0 {
+		// A lost configure task update can leave an already-configured VM in Cloning.
+		// Advance the state so disk reconciliation, bootstrap, and power-on still run.
+		conditions.Set(machineScope.ProxmoxMachine, metav1.Condition{
+			Type:   infrav1.ProxmoxMachineVirtualMachineProvisionedCondition,
+			Status: metav1.ConditionFalse,
+			Reason: infrav1.ProxmoxMachineVirtualMachineProvisionedWaitingForDiskReconciliationReason,
+		})
 		return false, nil
 	}
 

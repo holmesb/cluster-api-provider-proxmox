@@ -464,6 +464,26 @@ func TestReconcileVirtualMachineConfig_NoConfig(t *testing.T) {
 	requeue, err := reconcileVirtualMachineConfig(context.Background(), machineScope)
 	require.NoError(t, err)
 	require.False(t, requeue)
+	require.Equal(t, infrav1.ProxmoxMachineVirtualMachineProvisionedWaitingForDiskReconciliationReason,
+		conditions.GetReason(machineScope.ProxmoxMachine, infrav1.ProxmoxMachineVirtualMachineProvisionedCondition))
+}
+
+// A VM whose configuration already matches must continue provisioning instead of being reported ready.
+func TestReconcileVM_NoConfigChangeIsNotReady(t *testing.T) {
+	machineScope, proxmoxClient, _ := setupReconcilerTestWithCondition(t,
+		infrav1.ProxmoxMachineVirtualMachineProvisionedCloningReason)
+	vm := newStoppedVM()
+	vm.VMID = 123
+	vm.VirtualMachineConfig.Description = machineScope.ProxmoxMachine.GetName()
+	machineScope.SetVirtualMachineID(int64(vm.VMID))
+
+	proxmoxClient.EXPECT().GetVM(context.Background(), "node1", int64(vm.VMID)).Return(vm, nil).Once()
+
+	result, err := ReconcileVM(context.Background(), machineScope)
+	require.NoError(t, err)
+	require.NotEqual(t, infrav1.VirtualMachineStateReady, result.State)
+	require.NotEqual(t, infrav1.ProxmoxMachineVirtualMachineProvisionedCloningReason,
+		conditions.GetReason(machineScope.ProxmoxMachine, infrav1.ProxmoxMachineVirtualMachineProvisionedCondition))
 }
 
 func TestReconcileVirtualMachineConfig_ApplyConfig(t *testing.T) {
@@ -741,6 +761,51 @@ func TestReconcileVM_CloudInitFailed(t *testing.T) {
 	cond := conditions.Get(machineScope.ProxmoxMachine, infrav1.ProxmoxMachineVirtualMachineProvisionedCondition)
 	require.NotNil(t, cond)
 	require.Equal(t, metav1.ConditionFalse, cond.Status)
+}
+
+func TestCheckCloudInitStatus_ErrorClassification(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{
+			name:   "direct failure",
+			err:    goproxmox.ErrCloudInitFailed,
+			reason: infrav1.ProxmoxMachineVirtualMachineProvisionedVMProvisionFailedReason,
+		},
+		{
+			name:   "wrapped failure",
+			err:    fmt.Errorf("guest status: %w", goproxmox.ErrCloudInitFailed),
+			reason: infrav1.ProxmoxMachineVirtualMachineProvisionedVMProvisionFailedReason,
+		},
+		{
+			name:   "transient API error",
+			err:    fmt.Errorf("guest agent unavailable"),
+			reason: infrav1.ProxmoxMachineVirtualMachineProvisionedWaitingForCloudInitReason,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			machineScope, proxmoxClient, _ := setupReconcilerTestWithCondition(t,
+				infrav1.ProxmoxMachineVirtualMachineProvisionedWaitingForCloudInitReason)
+			vm := newRunningVM()
+			machineScope.SetVirtualMachine(vm)
+			proxmoxClient.EXPECT().QemuAgentStatus(context.Background(), vm).Return(nil).Once()
+			proxmoxClient.EXPECT().CloudInitStatus(context.Background(), vm).Return(false, test.err).Once()
+
+			requeue, err := checkCloudInitStatus(context.Background(), machineScope)
+			require.ErrorIs(t, err, test.err)
+			require.False(t, requeue)
+			require.Equal(t, test.reason, conditions.GetReason(machineScope.ProxmoxMachine,
+				infrav1.ProxmoxMachineVirtualMachineProvisionedCondition))
+			if test.reason == infrav1.ProxmoxMachineVirtualMachineProvisionedVMProvisionFailedReason {
+				cond := conditions.Get(machineScope.ProxmoxMachine,
+					infrav1.ProxmoxMachineVirtualMachineProvisionedCondition)
+				require.Equal(t, test.err.Error(), cond.Message)
+			}
+		})
+	}
 }
 
 func TestReconcileVM_CloudInitRunning(t *testing.T) {

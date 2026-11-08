@@ -207,6 +207,7 @@ NEXT_VM:
 				bestDistance = distance
 				matches = 0
 				vmTemplate = nil
+				preferredTemplate = nil
 				ambiguousMatches = false
 				bestNormalizedTags = ""
 			} else if bestNormalizedTags != "" {

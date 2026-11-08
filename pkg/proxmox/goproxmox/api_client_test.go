@@ -565,6 +565,37 @@ func TestProxmoxAPIClient_FindVMTemplateByTags(t *testing.T) {
 	}
 }
 
+func TestProxmoxAPIClient_FindVMTemplateByTags_BestBeforePreferredNode(t *testing.T) {
+	worse := &proxmox.ClusterResource{
+		VMID: 601, Node: "capmox01", Tags: "template;extra", Template: 1,
+	}
+	best := &proxmox.ClusterResource{
+		VMID: 602, Node: "capmox02", Tags: "template", Template: 1,
+	}
+	tests := []struct {
+		name      string
+		resources proxmox.ClusterResources
+	}{
+		{name: "worse preferred template first", resources: proxmox.ClusterResources{worse, best}},
+		{name: "best template first", resources: proxmox.ClusterResources{best, worse}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := newTestClient(t)
+			httpmock.RegisterResponder(http.MethodGet, `=~/cluster/status`,
+				newJSONResponder(http.StatusOK, proxmox.NodeStatuses{}))
+			httpmock.RegisterResponder(http.MethodGet, `=~/cluster/resources`,
+				newJSONResponder(http.StatusOK, test.resources))
+
+			node, vmID, err := client.FindVMTemplateByTags(context.Background(), []string{"template"},
+				string(infrav1.TemplateMatchPolicyBest), "capmox01")
+			require.NoError(t, err)
+			require.Equal(t, "capmox02", node)
+			require.EqualValues(t, 602, vmID)
+		})
+	}
+}
+
 func TestProxmoxAPIClient_DeleteVM(t *testing.T) {
 	tests := []struct {
 		name  string
