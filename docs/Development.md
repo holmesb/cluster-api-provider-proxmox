@@ -129,6 +129,9 @@ For help deploying your first cluster with CAPMOX, see [usage](Usage.md).
 
 ## Make targets
 
+For dependency bump scripts, release version maintenance and shell tests, see
+[CI and version tooling](ci-version-tooling-v1.3.md).
+
 **NOTE:** Run `make --help` for more information on all potential `make` targets
 
 More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
