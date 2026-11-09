@@ -30,6 +30,7 @@ import (
 
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -428,16 +429,165 @@ type IPClaimDef struct {
 	Annotations map[string]string
 }
 
+// IPAddressClaimResolutionStatus describes the state of the deterministic
+// IPAddressClaim expected for an IPClaimDef.
+type IPAddressClaimResolutionStatus string
+
+const (
+	// ClaimMissing means the expected deterministic IPAddressClaim does not exist.
+	ClaimMissing IPAddressClaimResolutionStatus = "ClaimMissing"
+	// ClaimPending means the expected IPAddressClaim exists but has no AddressRef yet.
+	ClaimPending IPAddressClaimResolutionStatus = "ClaimPending"
+	// ClaimResolved means the expected IPAddressClaim and referenced IPAddress are valid.
+	ClaimResolved IPAddressClaimResolutionStatus = "ClaimResolved"
+	// ClaimConflict means the expected IPAddressClaim exists but cannot be safely consumed.
+	ClaimConflict IPAddressClaimResolutionStatus = "ClaimConflict"
+)
+
+// IPAddressClaimConflictReason describes why an existing IPAddressClaim cannot
+// be safely consumed for the requested IPClaimDef.
+type IPAddressClaimConflictReason string
+
+const (
+	// ConflictOwnerMismatch means the expected IPAddressClaim is not owned by the ProxmoxMachine.
+	ConflictOwnerMismatch IPAddressClaimConflictReason = "OwnerMismatch"
+	// ConflictPoolMismatch means the expected IPAddressClaim references a different pool.
+	ConflictPoolMismatch IPAddressClaimConflictReason = "PoolMismatch"
+	// ConflictAddressMissing means the IPAddressClaim AddressRef points at a missing IPAddress.
+	ConflictAddressMissing IPAddressClaimConflictReason = "AddressMissing"
+	// ConflictAddressPoolRef means the referenced IPAddress belongs to a different pool.
+	ConflictAddressPoolRef IPAddressClaimConflictReason = "AddressPoolRef"
+	// ConflictAddressClaimRef means the address does not refer back to the expected claim.
+	ConflictAddressClaimRef IPAddressClaimConflictReason = "AddressClaimRef"
+	// ConflictInvalidAddress means the allocation does not contain a valid IP address.
+	ConflictInvalidAddress IPAddressClaimConflictReason = "InvalidAddress"
+)
+
+// IPAddressClaimResolution is the result of resolving the deterministic
+// IPAddressClaim for an IPClaimDef.
+type IPAddressClaimResolution struct {
+	Status              IPAddressClaimResolutionStatus
+	ConflictReason      IPAddressClaimConflictReason
+	ClaimName           string
+	Claim               *ipamv1.IPAddressClaim
+	Address             *ipamv1.IPAddress
+	OrphanedAddressName string
+}
+
+func ipClaimName(owner client.Object, ipClaimRef IPClaimDef) (string, error) {
+	offset, exists := ipClaimRef.Annotations[infrav1.ProxmoxPoolOffsetAnnotation]
+	if !exists {
+		offset = "0"
+	}
+
+	offsetNum, err := strconv.Atoi(offset)
+	if err != nil {
+		return "", errors.Wrapf(err, "invalid %q annotation value %q for %T %q (device=%q)", infrav1.ProxmoxPoolOffsetAnnotation, offset, owner, owner.GetName(), ipClaimRef.Device)
+	}
+
+	return IPAddressFormat(owner.GetName(), ipClaimRef.Device, offsetNum, infrav1.DefaultSuffix), nil
+}
+
+// ResolveIPAddressClaim resolves the deterministic IPAddressClaim for a
+// ProxmoxMachine and only returns an allocated IPAddress when claim ownership
+// and pool references are valid.
+func (h *Helper) ResolveIPAddressClaim(ctx context.Context, moxm *infrav1.ProxmoxMachine, ipClaimRef IPClaimDef) (IPAddressClaimResolution, error) {
+	claimName, err := ipClaimName(moxm, ipClaimRef)
+	if err != nil {
+		return IPAddressClaimResolution{}, err
+	}
+
+	result := IPAddressClaimResolution{
+		Status:    ClaimMissing,
+		ClaimName: claimName,
+	}
+
+	claim := &ipamv1.IPAddressClaim{}
+	if err := h.ctrlClient.Get(ctx, client.ObjectKey{Name: claimName, Namespace: moxm.Namespace}, claim); err != nil {
+		if apierrors.IsNotFound(err) {
+			orphanedAddress := &ipamv1.IPAddress{}
+			if orphanErr := h.ctrlClient.Get(ctx, client.ObjectKey{Name: claimName, Namespace: moxm.Namespace}, orphanedAddress); orphanErr == nil {
+				result.OrphanedAddressName = orphanedAddress.Name
+			} else if !apierrors.IsNotFound(orphanErr) {
+				return result, orphanErr
+			}
+			return result, nil
+		}
+		return result, err
+	}
+	result.Claim = claim
+
+	// HasOwnerReference matches group/kind/name but ignores UID. A previous machine with the
+	// same name must not donate its allocation to a replacement machine.
+	if !hasDirectOwnerReference(claim.OwnerReferences, moxm) {
+		result.Status = ClaimConflict
+		result.ConflictReason = ConflictOwnerMismatch
+		return result, nil
+	}
+
+	if !matchesClaimPoolRef(*claim, ipClaimRef.PoolRef) {
+		result.Status = ClaimConflict
+		result.ConflictReason = ConflictPoolMismatch
+		return result, nil
+	}
+
+	if claim.Status.AddressRef.Name == "" {
+		result.Status = ClaimPending
+		return result, nil
+	}
+
+	addr := &ipamv1.IPAddress{}
+	if err := h.ctrlClient.Get(ctx, client.ObjectKey{Name: claim.Status.AddressRef.Name, Namespace: claim.Namespace}, addr); err != nil {
+		if apierrors.IsNotFound(err) {
+			result.Status = ClaimConflict
+			result.ConflictReason = ConflictAddressMissing
+			return result, nil
+		}
+		return result, err
+	}
+
+	if !matchesPoolRef(*addr, ipClaimRef.PoolRef) {
+		result.Status = ClaimConflict
+		result.ConflictReason = ConflictAddressPoolRef
+		return result, nil
+	}
+
+	if addr.Spec.ClaimRef.Name != claim.Name {
+		result.Status = ClaimConflict
+		result.ConflictReason = ConflictAddressClaimRef
+		return result, nil
+	}
+
+	parsedAddress, _ := netip.ParseAddr(addr.Spec.Address)
+	if !parsedAddress.IsValid() {
+		result.Status = ClaimConflict
+		result.ConflictReason = ConflictInvalidAddress
+		return result, nil
+	}
+
+	addr = addr.DeepCopy()
+	annotations := addr.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	// Claim annotations are the capmox source of truth for provisioning metadata
+	// such as offset/default-gateway, so they intentionally override address
+	// annotations in the in-memory result returned to callers.
+	maps.Insert(annotations, maps.All(claim.GetAnnotations()))
+	addr.SetAnnotations(annotations)
+
+	result.Status = ClaimResolved
+	result.Address = addr
+	return result, nil
+}
+
 // CreateIPAddressClaim creates an IPAddressClaim for a given object.
 func (h *Helper) CreateIPAddressClaim(ctx context.Context, owner client.Object, ipClaimRef IPClaimDef) error {
 	key := client.ObjectKey{
 		Namespace: owner.GetNamespace(),
 		Name:      owner.GetName(),
 	}
-	suffix := infrav1.DefaultSuffix
-
 	ref := ipClaimRef.PoolRef
-	device := ipClaimRef.Device
 	annotations := ipClaimRef.Annotations
 	if annotations == nil {
 		annotations = make(map[string]string)
@@ -477,21 +627,14 @@ func (h *Helper) CreateIPAddressClaim(ctx context.Context, owner client.Object, 
 		labels[infrav1.ProxmoxZoneLabel] = key
 	}
 
-	// Add a fallback for this ipAddress's offset.
-	offset, exists := annotations[infrav1.ProxmoxPoolOffsetAnnotation]
-	if !exists {
-		offset = "0"
-	}
-
-	offsetNum, err := strconv.Atoi(offset)
+	claimName, err := ipClaimName(owner, ipClaimRef)
 	if err != nil {
 		return err
 	}
 
-	// TODO: suffix makes no sense, fmt.Sprintf() needs to be shared with testing
 	desired := &ipamv1.IPAddressClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        IPAddressFormat(owner.GetName(), device, offsetNum, suffix),
+			Name:        claimName,
 			Namespace:   owner.GetNamespace(),
 			Labels:      labels,
 			Annotations: annotations,
@@ -518,54 +661,6 @@ func (h *Helper) GetIPAddress(ctx context.Context, key client.ObjectKey) (*ipamv
 	err := h.ctrlClient.Get(ctx, key, out)
 	if err != nil {
 		return nil, err
-	}
-
-	return out, nil
-}
-
-// GetIPAddressV2 is the replacement for GetIPAddress.
-// TODO: Code cleanup.
-func (h *Helper) GetIPAddressV2(ctx context.Context, poolRef corev1.TypedLocalObjectReference, moxm *infrav1.ProxmoxMachine) ([]ipamv1.IPAddress, error) {
-	ipAddresses, err := h.GetIPAddressByPool(ctx, poolRef)
-
-	out := make([]ipamv1.IPAddress, 0)
-	// fieldSelector, err := fields.ParseSelector("spec.poolRef.name=" + poolRef.Name + ",spec.poolRef.kind=" + poolRef.Kind)
-	// fieldSelector, err := fields.ParseSelector("metadata" + poolRef.Name)
-
-	if err != nil {
-		return nil, err
-	}
-	for _, addr := range ipAddresses {
-		key := client.ObjectKey{
-			Name:      addr.Name,
-			Namespace: addr.Namespace,
-		}
-
-		// Get the parent to find the owner machine
-		// Todo: IPAddressClaim cache in context.
-		ipAddressClaim := &ipamv1.IPAddressClaim{}
-		err := h.ctrlClient.Get(ctx, key, ipAddressClaim)
-		if err != nil {
-			return nil, err
-		}
-
-		// check if current moxm is in the owner reference
-		isOwner, err := controllerutil.HasOwnerReference(ipAddressClaim.OwnerReferences, moxm, h.ctrlClient.Scheme())
-		if err != nil {
-			return nil, err
-		}
-
-		// Forward the offset counter and default gateway from the ippool Reference
-		annotations := addr.GetAnnotations()
-		if annotations == nil {
-			annotations = make(map[string]string)
-		}
-		maps.Insert(annotations, maps.All(ipAddressClaim.GetAnnotations()))
-		addr.SetAnnotations(annotations)
-
-		if isOwner {
-			out = append(out, addr)
-		}
 	}
 
 	return out, nil
@@ -645,4 +740,23 @@ func toTypedLocalObjectReference(ref ipamv1.IPPoolReference) corev1.TypedLocalOb
 		Kind:     ref.Kind,
 		Name:     ref.Name,
 	}
+}
+
+func matchesClaimPoolRef(claim ipamv1.IPAddressClaim, poolRef corev1.TypedLocalObjectReference) bool {
+	return poolRefFieldsMatch(claim.Spec.PoolRef.Name, claim.Spec.PoolRef.APIGroup, claim.Spec.PoolRef.Kind, poolRef)
+}
+
+func hasDirectOwnerReference(ownerReferences []metav1.OwnerReference, moxm *infrav1.ProxmoxMachine) bool {
+	if moxm.UID == "" {
+		return false
+	}
+	for _, ownerReference := range ownerReferences {
+		if ownerReference.UID == moxm.UID &&
+			ownerReference.Name == moxm.Name &&
+			ownerReference.Kind == infrav1.ProxmoxMachineKind &&
+			normalizedAPIGroup(ownerReference.APIVersion) == infrav1.GroupVersion.Group {
+			return true
+		}
+	}
+	return false
 }

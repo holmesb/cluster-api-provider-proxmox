@@ -89,6 +89,11 @@ func ReconcileVM(ctx context.Context, scope *scope.MachineScope) (infrav1.Virtua
 		return vm, err
 	}
 
+	// Restore missing address status from existing IPAM allocations without changing the VM.
+	if err := reconcileAddressRecovery(ctx, scope); err != nil {
+		return vm, err
+	}
+
 	if requeue, err := reconcileVirtualMachineConfig(ctx, scope); err != nil || requeue {
 		scope.Logger.V(4).Info("after reconcileVirtualMachineConfig", "machineName", scope.ProxmoxMachine.GetName(), "requeue", requeue, "err", err)
 		return vm, err
