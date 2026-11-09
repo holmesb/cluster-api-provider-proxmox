@@ -19,15 +19,18 @@ package vmservice
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 
 	infrav1 "github.com/ionos-cloud/cluster-api-provider-proxmox/api/v1alpha2"
+	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/network"
 	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/scope"
 )
 
@@ -251,4 +254,107 @@ func NetNameToOffset(name infrav1.NetName) (int, error) {
 // OffsetToNetName converts an integer to a proxmox network name.
 func OffsetToNetName(offset uint8) infrav1.NetName {
 	return infrav1.NetName(fmt.Sprintf("net%d", offset))
+}
+
+// parseRouteTarget expands placeholders or parses an address/prefix.
+func parseRouteTarget(s *string, is6 *bool) (netip.Prefix, error) {
+	if ptr.Deref(s, "") == "" {
+		return netip.Prefix{}, nil
+	}
+	if network.IsRouteTargetPlaceholder(s) {
+		if ptr.Deref(is6, false) {
+			return netip.PrefixFrom(netip.IPv6Unspecified(), 0), nil
+		}
+		return netip.PrefixFrom(netip.IPv4Unspecified(), 0), nil
+	}
+	if p, err := netip.ParsePrefix(*s); err == nil {
+		return p, nil
+	}
+	addr, err := netip.ParseAddr(*s)
+	if err != nil {
+		return netip.Prefix{}, errors.Wrapf(err, "invalid target %q", *s)
+	}
+	return netip.PrefixFrom(addr, addr.BitLen()), nil
+}
+
+// resolveFamily prefers an explicit family, then infers it from concrete address hints.
+func resolveFamily(is6 *bool, hints ...*string) *bool {
+	if is6 != nil {
+		return is6
+	}
+	for _, h := range hints {
+		if ptr.Deref(h, "") == "" || network.IsRouteTargetPlaceholder(h) {
+			continue
+		}
+		if p, err := netip.ParsePrefix(*h); err == nil {
+			return new(p.Addr().Is6())
+		}
+		if addr, err := netip.ParseAddr(*h); err == nil {
+			return new(addr.Is6())
+		}
+	}
+	return nil
+}
+
+// parseVia accepts a bare gateway address; an empty value means no gateway.
+func parseVia(s *string) (netip.Addr, error) {
+	if s == nil || *s == "" {
+		return netip.Addr{}, nil
+	}
+	addr, err := netip.ParseAddr(*s)
+	if err != nil {
+		return netip.Addr{}, errors.Wrapf(err, "invalid via %q", *s)
+	}
+	return addr, nil
+}
+
+// ToRoutingData converts API routes into parsed renderer data.
+func ToRoutingData(specs []infrav1.RouteSpec) ([]network.RoutingData, error) {
+	out := make([]network.RoutingData, 0, len(specs))
+	for _, spec := range specs {
+		// A "default"/"all" placeholder To needs an address family. Prefer an
+		// explicit is6, otherwise borrow it from the Via gateway.
+		to, err := parseRouteTarget(spec.To, resolveFamily(spec.Is6, spec.Via))
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid route")
+		}
+		via, err := parseVia(spec.Via)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, network.RoutingData{
+			To:     to,
+			Table:  spec.Table,
+			Via:    via,
+			Metric: spec.Metric,
+		})
+	}
+	return out, nil
+}
+
+// ToFIBRuleData converts API policies into parsed renderer data.
+func ToFIBRuleData(specs []infrav1.RoutingPolicySpec) ([]network.FIBRuleData, error) {
+	out := make([]network.FIBRuleData, 0, len(specs))
+	for _, spec := range specs {
+		// A "default"/"all" placeholder To/From needs an address family. Prefer
+		// an explicit is6, otherwise borrow it from whichever of To/From is a
+		// concrete address (a FIB rule cannot mix families).
+		is6 := resolveFamily(spec.Is6, spec.To, spec.From)
+		to, err := parseRouteTarget(spec.To, is6)
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid FIB rule")
+		}
+		// From accepts the same target syntax as To.
+		from, err := parseRouteTarget(spec.From, is6)
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid FIB rule from")
+		}
+		out = append(out, network.FIBRuleData{
+			To:       to,
+			Table:    spec.Table,
+			From:     from,
+			Priority: spec.Priority,
+		})
+	}
+	return out, nil
 }

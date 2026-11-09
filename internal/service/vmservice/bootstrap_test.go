@@ -38,8 +38,8 @@ import (
 	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/cloudinit"
 	. "github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/consts"
 	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/ignition"
+	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/network"
 	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/scope"
-	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/types"
 )
 
 const (
@@ -47,8 +47,8 @@ const (
 )
 
 var defaultNic = infrav1.NetworkDevice{
-	Bridge: ptr.To("vmbr0"),
-	Model:  ptr.To("virtio"),
+	Bridge: new("vmbr0"),
+	Model:  new("virtio"),
 	Name:   infrav1.DefaultNetworkDevice,
 }
 
@@ -94,7 +94,7 @@ func addDefaultIPPool(machineScope *scope.MachineScope, offset ...int) corev1.Ty
 	}
 	// call to add defaultNic
 	addIPPool(machineScope, defaultPool, infrav1.NetName(fmt.Sprintf("net%d", offset[0])))
-	machineScope.ProxmoxMachine.Spec.Network.NetworkDevices[offset[0]].DefaultIPv4 = ptr.To(true)
+	machineScope.ProxmoxMachine.Spec.Network.NetworkDevices[offset[0]].DefaultIPv4 = new(true)
 
 	setInClusterIPPoolStatus(machineScope, "test-v4-icip", infrav1.IPv4Type, nil)
 	return defaultPool
@@ -111,7 +111,7 @@ func addDefaultIPPoolV6(machineScope *scope.MachineScope, offset ...int) corev1.
 	}
 	// call to add defaultNic
 	addIPPool(machineScope, defaultPoolV6, infrav1.NetName(fmt.Sprintf("net%d", offset[0])))
-	machineScope.ProxmoxMachine.Spec.Network.NetworkDevices[offset[0]].DefaultIPv6 = ptr.To(true)
+	machineScope.ProxmoxMachine.Spec.Network.NetworkDevices[offset[0]].DefaultIPv6 = new(true)
 
 	setInClusterIPPoolStatus(machineScope, "test-v6-icip", infrav1.IPv6Type, nil)
 	return defaultPoolV6
@@ -148,8 +148,8 @@ func addIPPool(machineScope *scope.MachineScope, poolRef corev1.TypedLocalObject
 	if index = slices.IndexFunc(networkDevices, func(e infrav1.NetworkDevice) bool { return reflect.DeepEqual(e.Name, netName) }); index < 0 {
 		index = len(networkDevices)
 		nic := infrav1.NetworkDevice{
-			Bridge: ptr.To(fmt.Sprintf("vmbr%d", index)),
-			Model:  ptr.To("virtio"),
+			Bridge: new(fmt.Sprintf("vmbr%d", index)),
+			Model:  new("virtio"),
 			Name:   netName,
 			InterfaceConfig: infrav1.InterfaceConfig{
 				IPPoolRef:  []corev1.TypedLocalObjectReference{},
@@ -246,7 +246,8 @@ func TestReconcileBootstrapData_UpdateStatus(t *testing.T) {
 	require.Equal(t, infrav1.DefaultNetworkDevice, networkConfigData[0].ProxName)
 	require.Equal(t, "ethernet", networkConfigData[0].Type)
 	require.Equal(t, "10.100.10.10"+"/16", networkConfigData[1].IPConfigs[0].IPAddress.String())
-	require.Equal(t, "10.100.10.1", networkConfigData[1].IPConfigs[0].Gateway)
+	require.Equal(t, "10.100.10.1", networkConfigData[1].Routes[0].Via.String())
+	require.Equal(t, "0.0.0.0/0", networkConfigData[1].Routes[0].To.String())
 	require.Equal(t, "AA:23:64:4D:84:CD", networkConfigData[1].MacAddress)
 	require.Equal(t, "eth1", networkConfigData[1].Name)
 	require.Equal(t, infrav1.NetName("net1"), networkConfigData[1].ProxName)
@@ -333,7 +334,7 @@ func TestGetBootstrapData_MissingSecretName(t *testing.T) {
 func TestGetBootstrapData_MissingSecretNotName(t *testing.T) {
 	machineScope, _, _ := setupReconcilerTestWithCondition(t, infrav1.ProxmoxMachineVirtualMachineProvisionedWaitingForBootstrapDataReconciliationReason)
 
-	machineScope.Machine.Spec.Bootstrap.DataSecretName = ptr.To("foo")
+	machineScope.Machine.Spec.Bootstrap.DataSecretName = new("foo")
 	data, _, err := getBootstrapData(context.Background(), machineScope)
 
 	require.Error(t, err)
@@ -344,7 +345,7 @@ func TestGetBootstrapData_MissingSecretNotName(t *testing.T) {
 func TestGetBootstrapData_MissingSecretValue(t *testing.T) {
 	machineScope, _, client := setupReconcilerTestWithCondition(t, infrav1.ProxmoxMachineVirtualMachineProvisionedWaitingForBootstrapDataReconciliationReason)
 
-	machineScope.Machine.Spec.Bootstrap.DataSecretName = ptr.To(machineScope.Name())
+	machineScope.Machine.Spec.Bootstrap.DataSecretName = new(machineScope.Name())
 	// missing format
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -398,12 +399,12 @@ func TestGetCommonInterfaceConfig_MissingIPPool(t *testing.T) {
 		NetworkDevices: []infrav1.NetworkDevice{
 			defaultNic,
 			{
-				Bridge: ptr.To("vmbr1"),
-				Model:  ptr.To("virtio"),
+				Bridge: new("vmbr1"),
+				Model:  new("virtio"),
 				Name:   "net1",
 				InterfaceConfig: infrav1.InterfaceConfig{
 					IPPoolRef: []corev1.TypedLocalObjectReference{{
-						APIGroup: ptr.To("ipam.cluster.x-k8s.io"),
+						APIGroup: new("ipam.cluster.x-k8s.io"),
 						Kind:     GlobalInClusterIPPool,
 						Name:     "net1-inet",
 					}},
@@ -412,8 +413,8 @@ func TestGetCommonInterfaceConfig_MissingIPPool(t *testing.T) {
 		},
 	}
 
-	cfg := &types.NetworkConfigData{Name: "net1"}
-	getCommonInterfaceConfig(context.Background(), machineScope, cfg, machineScope.ProxmoxMachine.Spec.Network.NetworkDevices[0].InterfaceConfig)
+	cfg := &network.ConfigData{Name: "net1"}
+	require.NoError(t, getCommonInterfaceConfig(context.Background(), machineScope, cfg, machineScope.ProxmoxMachine.Spec.Network.NetworkDevices[0].InterfaceConfig))
 	// Check that no IP config has been assigned even in the presence of an IPPoolRef.
 	require.Len(t, cfg.IPConfigs, 0)
 }
@@ -425,20 +426,20 @@ func TestGetCommonInterfaceConfig(t *testing.T) {
 	machineScope.ProxmoxMachine.Spec.Network = &infrav1.NetworkSpec{
 		NetworkDevices: []infrav1.NetworkDevice{
 			{
-				Bridge: ptr.To("vmbr1"),
-				Model:  ptr.To("virtio"),
+				Bridge: new("vmbr1"),
+				Model:  new("virtio"),
 				Name:   "net1",
 				InterfaceConfig: infrav1.InterfaceConfig{
 					DNSServers: []string{"1.2.3.4"},
 					LinkMTU:    &MTU,
 					Routing: infrav1.Routing{
 						Routes: []infrav1.RouteSpec{
-							{To: ptr.To("default"), Via: ptr.To("192.168.178.1")},
-							{To: ptr.To("172.24.16.0/24"), Via: ptr.To("192.168.178.1"), Table: ptr.To(int32(100))},
+							{To: new("default"), Via: new("192.168.178.1")},
+							{To: new("172.24.16.0/24"), Via: new("192.168.178.1"), Table: new(int32(100))},
 						},
 						RoutingPolicy: []infrav1.RoutingPolicySpec{
-							{To: ptr.To("10.10.10.0/24"), Table: ptr.To(int32(100))},
-							{From: ptr.To("172.24.16.0/24"), Table: ptr.To(int32(100))},
+							{To: new("10.10.10.0/24"), Table: new(int32(100))},
+							{From: new("172.24.16.0/24"), Table: new(int32(100))},
 						},
 					},
 				},
@@ -446,13 +447,13 @@ func TestGetCommonInterfaceConfig(t *testing.T) {
 		},
 	}
 
-	cfg := &types.NetworkConfigData{Name: "net1"}
-	getCommonInterfaceConfig(context.Background(), machineScope, cfg, machineScope.ProxmoxMachine.Spec.Network.NetworkDevices[0].InterfaceConfig)
+	cfg := &network.ConfigData{Name: "net1"}
+	require.NoError(t, getCommonInterfaceConfig(context.Background(), machineScope, cfg, machineScope.ProxmoxMachine.Spec.Network.NetworkDevices[0].InterfaceConfig))
 	require.Equal(t, "1.2.3.4", cfg.DNSServers[0])
-	require.Equal(t, "default", *cfg.Routes[0].To)
-	require.Equal(t, "172.24.16.0/24", *cfg.Routes[1].To)
-	require.Equal(t, "10.10.10.0/24", *cfg.FIBRules[0].To)
-	require.Equal(t, "172.24.16.0/24", *cfg.FIBRules[1].From)
+	require.Equal(t, "0.0.0.0/0", cfg.Routes[0].To.String())
+	require.Equal(t, "172.24.16.0/24", cfg.Routes[1].To.String())
+	require.Equal(t, "10.10.10.0/24", cfg.FIBRules[0].To.String())
+	require.Equal(t, "172.24.16.0/24", cfg.FIBRules[1].From.String())
 }
 
 func TestGetVirtualNetworkDevices_VRFDevice_MissingInterface(t *testing.T) {
@@ -468,7 +469,7 @@ func TestGetVirtualNetworkDevices_VRFDevice_MissingInterface(t *testing.T) {
 			}},
 		},
 	}
-	networkConfigData := []types.NetworkConfigData{{}}
+	networkConfigData := []network.ConfigData{{}}
 
 	cfg, err := getVirtualNetworkDevices(context.Background(), machineScope, networkSpec, networkConfigData)
 	require.Error(t, err)
@@ -495,9 +496,9 @@ func TestReconcileBootstrapData_DualStack(t *testing.T) {
 		{Name: "test-v6-icip"},
 	}
 	proxmoxCluster.Status.InClusterZoneRef = []infrav1.InClusterZoneRef{{
-		Zone:                 ptr.To("default"),
-		InClusterIPPoolRefV4: ptr.To(corev1.LocalObjectReference{Name: "test-v4-icip"}),
-		InClusterIPPoolRefV6: ptr.To(corev1.LocalObjectReference{Name: "test-v6-icip"}),
+		Zone:                 new("default"),
+		InClusterIPPoolRefV4: new(corev1.LocalObjectReference{Name: "test-v4-icip"}),
+		InClusterIPPoolRefV6: new(corev1.LocalObjectReference{Name: "test-v6-icip"}),
 	}}
 	require.NoError(t, kubeClient.Status().Update(context.Background(), proxmoxCluster))
 
@@ -522,10 +523,13 @@ func TestReconcileBootstrapData_DualStack(t *testing.T) {
 	require.Equal(t, 1, len(networkConfigData))
 	require.Equal(t, 2, len(networkConfigData[0].IPConfigs))
 	ipConfigs := networkConfigData[0].IPConfigs
-	require.Equal(t, "10.0.0.1", ipConfigs[0].Gateway)
 	require.Equal(t, "10.0.0.254/24", ipConfigs[0].IPAddress.String())
-	require.Equal(t, "2001:db8::1", ipConfigs[1].Gateway)
 	require.Equal(t, "2001:db8::2/96", ipConfigs[1].IPAddress.String())
+	routes := networkConfigData[0].Routes
+	require.Equal(t, "10.0.0.1", routes[0].Via.String())
+	require.Equal(t, "0.0.0.0/0", routes[0].To.String())
+	require.Equal(t, "2001:db8::1", routes[1].Via.String())
+	require.Equal(t, "::/0", routes[1].To.String())
 }
 
 func TestReconcileBootstrapData_DualStack_AdditionalDevices(t *testing.T) {
@@ -546,9 +550,9 @@ func TestReconcileBootstrapData_DualStack_AdditionalDevices(t *testing.T) {
 		{Name: "test-v6-icip"},
 	}
 	proxmoxCluster.Status.InClusterZoneRef = []infrav1.InClusterZoneRef{{
-		Zone:                 ptr.To("default"),
-		InClusterIPPoolRefV4: ptr.To(corev1.LocalObjectReference{Name: "test-v4-icip"}),
-		InClusterIPPoolRefV6: ptr.To(corev1.LocalObjectReference{Name: "test-v6-icip"}),
+		Zone:                 new("default"),
+		InClusterIPPoolRefV4: new(corev1.LocalObjectReference{Name: "test-v4-icip"}),
+		InClusterIPPoolRefV6: new(corev1.LocalObjectReference{Name: "test-v6-icip"}),
 	}}
 	require.NoError(t, kubeClient.Status().Update(context.Background(), proxmoxCluster))
 
@@ -579,14 +583,16 @@ func TestReconcileBootstrapData_DualStack_AdditionalDevices(t *testing.T) {
 	require.Equal(t, 2, len(networkConfigData[0].IPConfigs))
 	require.Equal(t, 2, len(networkConfigData[1].IPConfigs))
 	ipConfigs := networkConfigData[0].IPConfigs
-	require.Equal(t, "10.0.0.1", ipConfigs[0].Gateway)
 	require.Equal(t, "10.10.10.10/24", ipConfigs[0].IPAddress.String())
-	require.Equal(t, "2001:db8::1", ipConfigs[1].Gateway)
 	require.Equal(t, "2001:db8::2/96", ipConfigs[1].IPAddress.String())
+	routes := networkConfigData[0].Routes
+	require.Equal(t, "10.0.0.1", routes[0].Via.String())
+	require.Equal(t, "0.0.0.0/0", routes[0].To.String())
+	require.Equal(t, "2001:db8::1", routes[1].Via.String())
+	require.Equal(t, "::/0", routes[1].To.String())
 	ipConfigs = networkConfigData[1].IPConfigs
-	require.Equal(t, "", ipConfigs[0].Gateway) // No Gateway assigned
+	require.Empty(t, networkConfigData[1].Routes) // No Gateway assigned
 	require.Equal(t, "10.0.0.10/24", ipConfigs[0].IPAddress.String())
-	require.Equal(t, "", ipConfigs[1].Gateway) // No Gateway assigned
 	require.Equal(t, "2001:db8::9/64", ipConfigs[1].IPAddress.String())
 }
 
@@ -608,9 +614,9 @@ func TestReconcileBootstrapData_DualStack_SplitDefaultGateway(t *testing.T) {
 		{Name: "test-v6-icip"},
 	}
 	proxmoxCluster.Status.InClusterZoneRef = []infrav1.InClusterZoneRef{{
-		Zone:                 ptr.To("default"),
-		InClusterIPPoolRefV4: ptr.To(corev1.LocalObjectReference{Name: "test-v4-icip"}),
-		InClusterIPPoolRefV6: ptr.To(corev1.LocalObjectReference{Name: "test-v6-icip"}),
+		Zone:                 new("default"),
+		InClusterIPPoolRefV4: new(corev1.LocalObjectReference{Name: "test-v4-icip"}),
+		InClusterIPPoolRefV6: new(corev1.LocalObjectReference{Name: "test-v6-icip"}),
 	}}
 	require.NoError(t, kubeClient.Status().Update(context.Background(), proxmoxCluster))
 
@@ -637,13 +643,15 @@ func TestReconcileBootstrapData_DualStack_SplitDefaultGateway(t *testing.T) {
 	require.Equal(t, 1, len(networkConfigData[0].IPConfigs))
 	require.Equal(t, 1, len(networkConfigData[1].IPConfigs))
 	ipConfigs := networkConfigData[0].IPConfigs
-	require.Equal(t, "10.0.0.1", ipConfigs[0].Gateway)
 	require.Equal(t, "10.10.10.10/24", ipConfigs[0].IPAddress.String())
 	require.True(t, ipConfigs[0].Default)
+	require.Equal(t, "10.0.0.1", networkConfigData[0].Routes[0].Via.String())
+	require.Equal(t, "0.0.0.0/0", networkConfigData[0].Routes[0].To.String())
 	ipConfigs = networkConfigData[1].IPConfigs
-	require.Equal(t, "2001:db8::1", ipConfigs[0].Gateway)
 	require.Equal(t, "2001:db8::2/96", ipConfigs[0].IPAddress.String())
 	require.True(t, ipConfigs[0].Default)
+	require.Equal(t, "2001:db8::1", networkConfigData[1].Routes[0].Via.String())
+	require.Equal(t, "::/0", networkConfigData[1].Routes[0].To.String())
 }
 
 func TestReconcileBootstrapData_VirtualDevices_VRF(t *testing.T) {
@@ -683,18 +691,20 @@ func TestReconcileBootstrapData_VirtualDevices_VRF(t *testing.T) {
 	require.Equal(t, 2, len(networkConfigData[0].IPConfigs))
 	require.Equal(t, 1, len(networkConfigData[1].IPConfigs))
 	require.Equal(t, 0, len(networkConfigData[2].IPConfigs))
-	require.Equal(t, 1, len(networkConfigData[2].Interfaces))
+	require.Equal(t, 1, len(networkConfigData[2].Children))
 	ipConfigs := networkConfigData[0].IPConfigs
-	require.Equal(t, "10.0.0.1", ipConfigs[0].Gateway)
 	require.Equal(t, "10.10.10.10/24", ipConfigs[0].IPAddress.String())
 	require.Equal(t, "10.20.10.10/23", ipConfigs[1].IPAddress.String())
+	require.Equal(t, "10.0.0.1", networkConfigData[0].Routes[0].Via.String())
+	require.Equal(t, "0.0.0.0/0", networkConfigData[0].Routes[0].To.String())
 	ipConfigs = networkConfigData[1].IPConfigs
 	require.Equal(t, "10.100.10.10/22", ipConfigs[0].IPAddress.String())
 	// VRF Data
 	require.Equal(t, "vrf", networkConfigData[2].Type)
 	require.Equal(t, "vrf-blue", networkConfigData[2].Name)
-	require.Equal(t, "eth1", networkConfigData[2].Interfaces[0])
-	require.Equal(t, int32(500), networkConfigData[2].Table)
+	// Children stores the names of the controlled devices.
+	require.Equal(t, "eth1", networkConfigData[2].Children[0])
+	require.Equal(t, int32(500), *networkConfigData[2].Table)
 }
 
 func TestVMHasMacAddress(t *testing.T) {
@@ -821,8 +831,9 @@ func TestReconcileBootstrapData_DefaultDeviceIPPoolRef(t *testing.T) {
 	require.Equal(t, 1, len(networkConfigData))
 	require.Equal(t, 2, len(networkConfigData[0].IPConfigs))
 	ipConfigs := networkConfigData[0].IPConfigs
-	require.Equal(t, "10.0.0.1", ipConfigs[0].Gateway)
 	require.Equal(t, "10.10.10.10/24", ipConfigs[0].IPAddress.String())
-	require.Equal(t, "", ipConfigs[1].Gateway)
 	require.Equal(t, "10.5.10.10/23", ipConfigs[1].IPAddress.String())
+	require.Equal(t, "10.0.0.1", networkConfigData[0].Routes[0].Via.String())
+	require.Equal(t, "0.0.0.0/0", networkConfigData[0].Routes[0].To.String())
+	require.Equal(t, 1, len(networkConfigData[0].Routes)) // second IP has no gateway
 }

@@ -27,12 +27,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	infrav1 "github.com/ionos-cloud/cluster-api-provider-proxmox/api/v1alpha2"
 	"github.com/ionos-cloud/cluster-api-provider-proxmox/internal/service/vmservice"
+	"github.com/ionos-cloud/cluster-api-provider-proxmox/pkg/network"
 )
 
 // ProxmoxMachine is a type that implements
@@ -108,6 +108,18 @@ func b2i(b *bool) int {
 	return 0
 }
 
+// anyDefaultSet reports whether any network device expresses an explicit
+// opinion about a default IP family. An explicit false is an opinion: it means
+// "do not attach the host network to this interface".
+func anyDefaultSet(devices []infrav1.NetworkDevice, get func(infrav1.NetworkDevice) *bool) bool {
+	for _, device := range devices {
+		if get(device) != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func validateNetworks(machine *infrav1.ProxmoxMachine) error {
 	if machine.Spec.Network == nil {
 		return nil
@@ -165,7 +177,7 @@ func validateNetworks(machine *infrav1.ProxmoxMachine) error {
 				name,
 				field.ErrorList{
 					field.Invalid(
-						field.NewPath("spec", "network", "additionalDevices", fmt.Sprint(i), "mtu"),
+						field.NewPath("spec", "network", "networkDevices", fmt.Sprint(i), "mtu"),
 						networkDevice,
 						err.Error()),
 				})
@@ -178,7 +190,7 @@ func validateNetworks(machine *infrav1.ProxmoxMachine) error {
 				name,
 				field.ErrorList{
 					field.Invalid(
-						field.NewPath("spec", "network", "additionalDevices", fmt.Sprint(i), "linkMtu"),
+						field.NewPath("spec", "network", "networkDevices", fmt.Sprint(i), "linkMtu"),
 						networkDevice,
 						err.Error()),
 				})
@@ -190,7 +202,20 @@ func validateNetworks(machine *infrav1.ProxmoxMachine) error {
 				name,
 				field.ErrorList{
 					field.Invalid(
-						field.NewPath("spec", "network", "additionalDevices", fmt.Sprint(i), "routingPolicy"),
+						field.NewPath("spec", "network", "networkDevices", fmt.Sprint(i), "routingPolicy"),
+						networkDevice, err.Error(),
+					),
+				})
+		}
+
+		err = validateRoutes(networkDevice.InterfaceConfig.Routes)
+		if err != nil {
+			return apierrors.NewInvalid(
+				gk,
+				name,
+				field.ErrorList{
+					field.Invalid(
+						field.NewPath("spec", "network", "networkDevices", fmt.Sprint(i), "routes"),
 						networkDevice, err.Error(),
 					),
 				})
@@ -219,6 +244,9 @@ func validateRoutingPolicy(policies *[]infrav1.RoutingPolicySpec) error {
 		if policy.Table == nil {
 			return fmt.Errorf("routing policy [%d] requires a table", i)
 		}
+		if err := validateRoutingPolicyPlaceholder(policy); err != nil {
+			return fmt.Errorf("routing policy [%d]: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -232,6 +260,45 @@ func validateVRFConfigRoutingPolicy(vrf *infrav1.VRFDevice) error {
 				return fmt.Errorf("VRF %s: device/rule routing table mismatch %d != %d", vrf.Name, vrf.Table, *policy.Table)
 			}
 		}
+		if err := validateRoutingPolicyPlaceholder(policy); err != nil {
+			return fmt.Errorf("VRF %s: %w", vrf.Name, err)
+		}
+	}
+	if err := validateRoutes(vrf.Routing.Routes); err != nil {
+		return fmt.Errorf("VRF %s: %w", vrf.Name, err)
+	}
+	return nil
+}
+
+// validateRoutingPolicyPlaceholder requires is6 to be set when a policy's to or
+// from is the "default"|"all" placeholder and neither field carries a concrete
+// address, since otherwise the ip address family cannot be derived.
+// This needs to be done in the webhook because two fields exceed CELs budget.
+func validateRoutingPolicyPlaceholder(policy infrav1.RoutingPolicySpec) error {
+	hasPlaceholder := network.IsRouteTargetPlaceholder(policy.To) || network.IsRouteTargetPlaceholder(policy.From)
+	hasConcrete := network.IsConcreteRouteTarget(policy.To) || network.IsConcreteRouteTarget(policy.From)
+	if hasPlaceholder && !hasConcrete && policy.Is6 == nil {
+		return fmt.Errorf("is6 must be set when 'to'/'from' is a placeholder and neither provides an address family")
+	}
+	return nil
+}
+
+func validateRoutes(routes []infrav1.RouteSpec) error {
+	for i, route := range routes {
+		if err := validateRoutePlaceholder(route); err != nil {
+			return fmt.Errorf("route [%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// validateRoutePlaceholder requires is6 to be set when a route's to is the
+// "default"|"all" placeholder and via is unset, since otherwise the ip address
+// family cannot be derived (via, when set, provides it).
+// This needs to be done in the webhook because two fields exceed CELs budget.
+func validateRoutePlaceholder(route infrav1.RouteSpec) error {
+	if network.IsRouteTargetPlaceholder(route.To) && !network.IsConcreteRouteTarget(route.Via) && route.Is6 == nil {
+		return fmt.Errorf("is6 must be set when 'to' is a placeholder and 'via' is unset")
 	}
 	return nil
 }
@@ -279,22 +346,18 @@ func (p *ProxmoxMachine) Default(_ context.Context, obj runtime.Object) error {
 		return nil
 	}
 
-	// Patch default networks if they are unset.
-	defaultIPv4Count := 0
-	defaultIPv6Count := 0
-
-	for _, networkDevice := range machine.Spec.Network.NetworkDevices {
-		defaultIPv4Count += b2i(networkDevice.DefaultIPv4)
-		defaultIPv6Count += b2i(networkDevice.DefaultIPv6)
-	}
+	// Patch default networks if they are unset. Setting defaultIPv4/defaultIPv6
+	// to false on every device opts out of the cluster default pool entirely,
+	// so only default when no device sets the field at all.
+	devices := machine.Spec.Network.NetworkDevices
 
 	// We guarantee that DefaultNetworkDevice is a valid proxmox network device.
 	offset, _ := vmservice.NetNameToOffset(infrav1.DefaultNetworkDevice)
-	if defaultIPv4Count == 0 {
-		machine.Spec.Network.NetworkDevices[offset].DefaultIPv4 = ptr.To(true)
+	if !anyDefaultSet(devices, func(d infrav1.NetworkDevice) *bool { return d.DefaultIPv4 }) {
+		machine.Spec.Network.NetworkDevices[offset].DefaultIPv4 = new(true)
 	}
-	if defaultIPv6Count == 0 {
-		machine.Spec.Network.NetworkDevices[offset].DefaultIPv6 = ptr.To(true)
+	if !anyDefaultSet(devices, func(d infrav1.NetworkDevice) *bool { return d.DefaultIPv6 }) {
+		machine.Spec.Network.NetworkDevices[offset].DefaultIPv6 = new(true)
 	}
 
 	return nil
