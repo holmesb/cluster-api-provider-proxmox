@@ -22,10 +22,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
 	"github.com/stretchr/testify/require"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	infrav1 "github.com/ionos-cloud/cluster-api-provider-proxmox/api/v1alpha2"
@@ -221,4 +223,57 @@ func TestMachineScope_GetBootstrapSecret(t *testing.T) {
 	bootstrapSecret := corev1.Secret{}
 	require.NoErrorf(t, scope.GetBootstrapSecret(context.Background(), &bootstrapSecret), "")
 	require.Equal(t, secret.GetName(), bootstrapSecret.GetName())
+}
+
+func TestMachineScope_VirtualMachineCloneStarted(t *testing.T) {
+	tests := []struct {
+		name    string
+		vmID    *int64
+		taskRef *string
+		started bool
+	}{
+		{"nothing started", nil, nil, false},
+		{"vm id set", new(int64(100)), nil, true},
+		{"clone task set", nil, new("UPID:pve:00000001:00000001:00000001:qmclone:100:root@pam:"), true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stored := &infrav1.ProxmoxMachine{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: metav1.NamespaceDefault},
+				Spec:       infrav1.ProxmoxMachineSpec{VirtualMachineID: test.vmID},
+				Status:     infrav1.ProxmoxMachineStatus{TaskRef: test.taskRef},
+			}
+			scope := newCloneStartedScope(t, stored)
+
+			started, err := scope.VirtualMachineCloneStarted(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, test.started, started)
+		})
+	}
+}
+
+func TestMachineScope_VirtualMachineCloneStarted_NotFound(t *testing.T) {
+	scope := newCloneStartedScope(t)
+
+	_, err := scope.VirtualMachineCloneStarted(context.Background())
+	require.Error(t, err)
+}
+
+func newCloneStartedScope(t *testing.T, stored ...client.Object) *MachineScope {
+	scheme := runtime.NewScheme()
+	require.NoError(t, infrav1.AddToScheme(scheme))
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(stored...).Build()
+
+	scope, err := NewMachineScope(MachineScopeParams{
+		Client:         fake.NewClientBuilder().WithScheme(scheme).Build(),
+		APIReader:      kubeClient,
+		Cluster:        &clusterv1.Cluster{},
+		Machine:        &clusterv1.Machine{},
+		InfraCluster:   &ClusterScope{},
+		ProxmoxMachine: &infrav1.ProxmoxMachine{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: metav1.NamespaceDefault}},
+		IPAMHelper:     &ipam.Helper{},
+	})
+	require.NoError(t, err)
+	return scope
 }
